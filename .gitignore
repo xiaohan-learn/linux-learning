@@ -1,0 +1,11 @@
+# 编辑器 / 笔记软件本地配置（不入库）
+.obsidian/
+.vscode/
+.idea/
+
+# 系统垃圾文件
+.DS_Store
+Thumbs.db
+
+# 临时文件
+*.tmp
