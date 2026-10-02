@@ -9,3 +9,11 @@ Thumbs.db
 
 # 临时文件
 *.tmp
+
+# C 编译产物（只留源码，产物本地产出）
+*.o
+*.out
+practice/**/student
+practice/**/hello
+practice/**/test
+practice/**/app
