@@ -72,7 +72,66 @@ clean:
 - **`.PHONY: clean`**：声明伪目标（不生成同名文件）
 - 改了哪个 `.c`，`make` 只重编它（增量编译，省时间）
 
+### Makefile 常用函数（应用层高频）
+> 语法全是 `$(函数名 参数)`，**参数间用逗号分隔、整体括号里**；函数里再嵌函数就 `$(func1 $(func2 x))`。下面都是写"通用 Makefile"时天天用的。
+
+| 函数                           | 作用                          | 示例 / 效果                                                      |
+| ---------------------------- | --------------------------- | ------------------------------------------------------------ |
+| `$(wildcard *.c)`            | 展开通配符，返回**当前匹配到的文件列表**      | `SRC = $(wildcard *.c)` → `main.c calc.c`                    |
+| `$(patsubst %.c,%.o,$(SRC))` | **模式替换**：把列表中 `.c` 全换成 `.o` | `main.o calc.o`                                              |
+| `$(subst from,to,text)`      | 简单文本替换（不按模式，纯字符串）           | `$(subst a,b,abc)` → `bbc`                                   |
+| `$(addprefix 前缀,列表)`         | 给列表每项加前缀                    | `$(addprefix obj/, main.o calc.o)` → `obj/main.o obj/calc.o` |
+| `$(addsuffix 后缀,列表)`         | 给列表每项加后缀                    | `$(addsuffix .o, main calc)` → `main.o calc.o`               |
+| `$(notdir 路径)`               | 去掉目录部分，只留文件名                | `$(notdir src/main.c)` → `main.c`                            |
+| `$(dir 路径)`                  | 只留目录部分                      | `$(dir src/main.c)` → `src/`                                 |
+| `$(basename 名)`              | 去掉后缀                        | `$(basename main.o)` → `main`                                |
+| `$(suffix 名)`                | 只取后缀                        | `$(suffix main.c)` → `.c`                                    |
+| `$(sort 列表)`                 | 排序并**去重**                   | `$(sort b a b)` → `a b`                                      |
+| `$(filter %.c,列表)`           | 从列表里**筛出**匹配模式的项            | `$(filter %.c, a.c b.h)` → `a.c`                             |
+| `$(filter-out %.h,列表)`       | 从列表里**剔除**匹配模式的项            | `$(filter-out %.h, a.c b.h)` → `a.c`                         |
+| `$(foreach v,列表,表达式)`        | 遍历列表，每个元素代入 `v` 跑表达式        | 见下例                                                          |
+| `$(shell 命令)`                | 调 shell 执行命令，返回输出           | `$(shell ls *.c)` 同 wildcard 但更通用                            |
+| `$(strip 文本)`                | 去掉首尾空格、压缩中间多余空格             | `$(strip  a  b )` → `a b`                                    |
+| `$(if 条件,真,假)`               | 条件分支；条件非空即"真"               | `$(if $(DEBUG),-g,)`                                         |
+| `$(call 变量,参1,参2)`           | 调用"参数化"的变量定义（宏）             | 见下例                                                          |
+
+#### foreach 实例
+```makefile
+# 把 SRCS 里每个 .c 换成 obj/ 下的 .o
+SRCS   = main.c calc.c
+OBJS   = $(foreach f,$(SRCS),obj/$(f:.c=.o))   # 结果: obj/main.o obj/calc.o
+# 注: $(f:.c=.o) 是 $(patsubst) 的简写形式，等价 $(patsubst %.c,%.o,$(f))
+```
+
+#### call 实例（自定义"函数"）
+```makefile
+# 定义一个带参数的变量（宏）：把源文件映射到目标 .o
+mk-obj = $(patsubst %.c,%.o,$(1))      # $(1) 是第一个实参
+OBJS   = $(call mk-obj,main.c) $(call mk-obj,calc.c)   # → main.o calc.o
+```
+
+#### 一套可复用的"通用 Makefile"骨架（综合上面所有函数）
+```makefile
+CC      = gcc
+CFLAGS  = -Wall -Wextra -g
+SRC     = $(wildcard *.c)               # 自动抓当前目录全部 .c
+OBJ     = $(patsubst %.c,%.o,$(SRC))    # .c → .o
+TARGET  = app
+
+$(TARGET): $(OBJ)
+	$(CC) $(OBJ) -o $(TARGET)
+
+%.o: %.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+.PHONY: clean
+clean:
+	rm -f $(OBJ) $(TARGET)
+```
+> 以后新项目（只要是可执行程序、纯 PC gcc）**直接复制这套**，改 `TARGET` 即可，不用每次手写每个 `.o` 规则。`wildcard` + `patsubst` 把"加文件"从"改 Makefile"变成了"往目录丢 .c"。
+
 > [!warning] 新手坑
 > - Makefile 命令缩进用 **Tab**，复制粘贴容易变空格 → 报错
 > - 忘记 `#include` 对应 `.h` → 隐式声明警告
 > - `-Wall` 报的警告别忽略，多半是真 bug
+> - 函数参数用**逗号**分隔，别写空格：`$(patsubst %.c,%.o,x)` ✓，`$(patsubst %.c %.o x)` ✗
