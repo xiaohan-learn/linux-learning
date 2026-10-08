@@ -13,7 +13,5 @@ Thumbs.db
 # C 编译产物（只留源码，产物本地产出）
 *.o
 *.out
-practice/**/student
-practice/**/hello
-practice/**/test
-practice/**/app
+# 如需忽略练习运行时生成的特定数据文件，请精确写明后缀，例如：
+# practice/**/*.txt
