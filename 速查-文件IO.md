@@ -1,6 +1,12 @@
 ---
-tags: [linux, 速查, 文件IO, 系统调用]
-aliases: [文件IO速查, 系统调用IO]
+tags:
+  - linux
+  - 速查
+  - 文件IO
+  - 系统调用
+aliases:
+  - 文件IO速查
+  - 系统调用IO
 created: 2026-09-30
 ---
 
