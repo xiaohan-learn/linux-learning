@@ -15,7 +15,7 @@
 | **fork + COW** | fork 复制父进程地址空间，但物理页**写时复制**——先共享、谁写谁独 | 父子打印全局 `var`：**地址同 `0x55..8010`、值一个 100 一个 200** |
 | **僵尸进程** | 子退出、父不回收，子变成 `Z`（defunct）占着 PID 表项 | `ps ajx` 见 `Z+ [zoom] <defunct>`；kill 父后 init 收尸 |
 | **孤儿进程** | 父先死，子被 init（WSL 是 `/init`，pid 1）收养 | 子的 ppid 从父 PID → **28171（/init）** |
-| **IPC 四大件进度** | 管道✅ FIFO✅ 共享内存(mmap)✅ 信号⬜（进行中） | — |
+| **IPC 四大件进度** | 管道✅ FIFO✅ 共享内存(mmap)✅ 信号✅（M3D6 完成 kill/alarm/setitimer/signal/sigaction/信号集；M3D7 用 SIGCHLD 回收子进程进阶） | — |
 | **管道读写行为 2×2** | 读空阻塞 / 写端全关返回 0(EOF) / 写满阻塞 / 无读端写→SIGPIPE | 64k 实测卡满；`echo $?` 得 **141 = 128+13** |
 
 ---
@@ -369,7 +369,16 @@ int raise(int sig);                 // 等价于 kill(getpid(), sig)
   - `sig`：信号编号（如 `SIGINT`/`SIGKILL`）；`sig=0` 用于**探测进程是否存在**（不真正发信号）
 - **返回值**：成功返回 **0**；失败返回 **-1**（errno）
 - **已知要点**：`kill(getpid(), sig)` 给自己发；`SIGKILL`/`SIGSTOP` 不可捕获（见状态说明）
-- ⏳ **注意点/易错点（待 M3D6 补全）**：权限限制（只能发给同 uid 或 root）；`sig=0` 探测用法；`pid` 取错导致误杀
+- **注意点**：
+  - **权限边界**：只能给同 uid（或 root）的进程发信号；给别的用户进程发会 `EPERM` 失败返回 -1
+  - **`sig=0` 探测进程是否存在**：不真正发信号，仅检查 `pid` 是否可达（可达返回 0，不可达返回 -1 置 `ESRCH`）
+  - **`SIGKILL`/`SIGSTOP` 不可捕获**：即使对方装了 handler，`kill(pid, SIGKILL)` 照样秒杀（kill_demo 父进程用 `kill(pid, SIGKILL)` 强杀子，子任何 handler 都拦不住）
+  - 子进程必须**先** `signal(SIGUSR1, handler)` 注册，父 `kill(pid, SIGUSR1)` 发出后才会进 handler 打印（已亲验 "child got SIGUSR1"）
+- **易错点**：
+  - **信号号必须和对方注册的一致**：kill 发 SIGUSR1、对方却只捕获 SIGINT，则走默认动作（终止），不会进你的 handler
+  - **忘记 `wait` 回收**：父 kill 掉子后必须 `wait(NULL)`，否则子变僵尸（kill_demo 已正确回收）
+  - 勿误杀：确认 `pid` 正确，别把父进程或自己 kill 了
+  - 返回值别漏判 -1
 
 ### 10.2 `alarm` — 一次性定时器
 ```c
@@ -379,7 +388,14 @@ unsigned int alarm(unsigned int seconds);
 - **参数**：`seconds` 秒后触发 `SIGALRM(14)`；`seconds=0` 取消已有定时器
 - **返回值**：**之前设定闹钟的剩余秒数**（首次设返回 0）
 - **已知要点**：进程只维护**一个**闹钟，重复调用覆盖之前的；到点默认终止进程（除非捕捉 SIGALRM）
-- ⏳ **注意点/易错点（待 M3D6 补全）**：alarm 精度为秒、非周期性；与 sleep 互相干扰；子进程不继承父的 alarm
+- **注意点**：
+  - 进程只维护**一个**闹钟，重复调用覆盖前一个；返回值是"上一个闹钟的剩余秒数"
+  - **默认动作是终止进程**——不捕获时 shell 打印 `Alarm clock` 后退出（alarm.c 亲验：1 秒后 "Alarm clock"）；想做别的事必须 `signal(SIGALRM, handler)` 捕获
+  - 与 `sleep` 互相干扰：alarm 会打断 sleep，sleep 底层也用 SIGALRM，二者别混用
+  - 子进程**不继承**父的 alarm（fork 后子进程闹钟被清零）
+- **易错点**：
+  - ⚠️ **注册信号号写错**：`alarm()` 发的是 `SIGALRM`，若误写成 `signal(SIGUSR1, handler)`（alarm_demo.c 原版 bug），handler 永远不触发，到点后进程照常被 SIGALRM 默认动作杀死、终端打印 "Alarm clock" 而非"时间到"。**正确：`signal(SIGALRM, handler)`**（setitimer_demo.c 即正确版，亲验打印"第N次触发SIGALRM"）
+  - "Alarm clock" 出现在屏幕而非重定向文件：这是 shell 对"子进程死于 SIGALRM"的提示，走终端不进 stdout，所以 `./alarm > out` 仍看到 Alarm clock、数字进 out
 
 ### 10.3 `setitimer` — 周期/高精度定时器
 ```c
@@ -397,7 +413,15 @@ struct timeval { long tv_sec; long tv_usec; };   // 秒 + 微秒
   - `new_value`：新的定时设置；`old_value` 输出旧设置（传 `NULL` 不关心）
 - **返回值**：成功返回 **0**；失败返回 **-1**
 - **已知要点**：相比 `alarm` 支持微秒级 + 周期性（`it_interval` 非 0 则循环触发）
-- ⏳ **注意点/易错点（待 M3D6 补全）**：结构体清零用 `memset`/赋 0 而非 `bzero` 风格；`it_value` 为 0 表示立即失效
+- **注意点**：
+  - `which=ITIMER_REAL` 最常用：真实时间，到点发 `SIGALRM`；另有 `ITIMER_VIRTUAL`（用户态时间→SIGVTALRM）、`ITIMER_PROF`（用户+内核→SIGPROF）
+  - `it_value` = 首次触发延时；`it_interval` = 后续周期（**全 0 = 只触发一次**做一次性；非 0 = 周期性）
+  - 必须在 `setitimer` **之前** `signal(SIGALRM, handler)` 注册好 handler，否则首次 SIGALRM 走默认（终止）
+  - 比 `alarm` 强：支持微秒级（`tv_usec`）+ 周期性
+- **易错点**：
+  - 结构体**显式赋全字段**（`it_interval`/`it_value` 的 `tv_sec`/`tv_usec` 都设），别留未初始化的脏值（setitimer_demo.c 全部显式赋值，零警告跑通）
+  - 同样要捕获 `SIGALRM`：误注册成 SIGUSR1 则 handler 永不触发（与 alarm_demo bug 同源）
+  - handler 里 `exit(0)` 是演示写法，真实程序慎用（直接结束进程、跳过清理）；更稳妥是置标志位让主循环处理
 
 ### 10.4 `signal` — 简单信号捕捉
 ```c
@@ -410,7 +434,13 @@ sighandler_t signal(int signum, sighandler_t handler);
   - `handler`：`SIG_IGN`（忽略）/ `SIG_DFL`（默认）/ 自定义函数 `void handler(int sig)`（捕获后调用，参数为信号号）
 - **返回值**：成功返回**旧的处理函数指针**；失败返回 **`SIG_ERR`**（不是 NULL）
 - **已知要点**：入门级捕捉接口，写法简单
-- ⏳ **注意点/易错点（待 M3D6 补全）**：`signal` 在不同 Unix 实现上**可能执行一次后自动复位**为默认（不可靠），生产用 `sigaction`；返回值判 `SIG_ERR` 不是 NULL
+- **注意点**：
+  - handler 原型 `void handler(int sig)`，参数 `sig` 是收到的信号号——一个 handler 可服务多个信号，靠 `sig` 区分（setitimer_demo.c 即 `if(sig==SIGALRM)`）
+  - 返回值：成功返回**旧** handler 指针；失败返回 **`SIG_ERR`**（不是 NULL，判错用 `==SIG_ERR`）
+- **易错点**：
+  - ⚠️ **不可靠语义**：`signal` 在部分系统上 handler 执行后会**自动复位为默认**（`SA_RESETHAND` 风格），导致第二次同信号走默认动作；**生产用 `sigaction`**（见 10.5）
+  - 编译警告 `unused parameter 'sig'`：handler 没用到 sig 参数时 `-Wextra` 会报；可在 handler 首行 `(void)sig;` 静音（kill_demo.c / alarm_demo.c 都有此警告；setitimer_demo.c 因用了 sig 而零警告）
+  - **handler 内慎用非可重入函数**：`printf` 在教材 demo 常用，但严格说不是 async-signal-safe；正式代码用 `write(STDOUT_FILENO, ..., n)` 或只在 handler 里置 `volatile sig_atomic_t` 标志、主循环处理
 
 ### 10.5 `sigaction` — 健壮信号捕捉
 ```c
@@ -426,7 +456,16 @@ struct sigaction {
 - **参数**：`signum` 信号号；`act` 新的处理方式（传 `NULL` 表示不改只查询）；`oldact` 输出旧方式（`NULL` 不关心）
 - **返回值**：成功返回 **0**；失败返回 **-1**
 - **已知要点**：比 `signal` 可控——`sa_mask` 指定 handler 执行期间自动屏蔽哪些信号，`sa_flags` 控制行为（如 `SA_RESTART` 自动重启被中断的慢系统调用）
-- ⏳ **注意点/易错点（待 M3D6 补全）**：`sa_handler` 与 `sa_sigaction` 二选一（由 `sa_flags` 决定用哪个）；`sa_mask` 不会屏蔽 `signum` 自身（自动屏蔽）；不可用于 `SIGKILL`/`SIGSTOP`；可重入问题（handler 内只用可重入函数 / `volatile sig_atomic_t`）
+- **注意点**：
+  - `sa_handler` 与 `sa_sigaction` 二选一：基础用 `sa_handler`（只收信号号）；要拿发送者 pid / 附带数据才用 `sa_sigaction`（需 `sa_flags|=SA_SIGINFO`）
+  - `sa_mask`：handler 执行期间**额外**屏蔽的信号集；而 `signum` 自身在 handler 运行时会**被自动屏蔽**（不用写进 sa_mask）——这正是 sigact_demo 里"第一次 handler 的 sleep 期间再按 Ctrl+C 被卡住、handler 结束后才补递达"的原因
+  - `sa_flags=0`：默认**不**自动重启被中断的慢系统调用（read 等会返回 -1/EINTR）；置 `SA_RESTART` 可让内核自动重启该系统调用（免手写 EINTR 重试循环）
+  - 返回值 0/-1，失败 `perror("sigaction")` 退出
+  - **不可用于 `SIGKILL`/`SIGSTOP`**：任何 handler 对它们都无效
+- **易错点**：
+  - ⚠️ **标准信号不排队**：sigact_demo 中 handler 里 `sleep(5)`，期间连按多次 Ctrl+C，只有**一次**会在 handler 结束后补递达（标准信号 pending 只记"有没有"，不记"几次"）；实时信号 `SIGRTMIN+` 才排队——实战/面试常考
+  - **`sigaction` 比 `signal` 可靠**：`signal` 在部分系统 handler 执行后会自动复位为默认（第二次同信号走默认动作），`sigaction` 不会；sigact_demo 连按三次 Ctrl+C 都稳定进 handler 即证
+  - handler 内慎用非可重入函数（`printf` 等）；正式代码用 `write(STDOUT_FILENO,...)` 或只在 handler 里置 `volatile sig_atomic_t` 标志、主循环处理
 
 ### 10.6 信号集函数（sigsetops）+ 屏蔽字/未决集
 ```c
@@ -442,16 +481,24 @@ int sigpending(sigset_t *set);               // 取“阻塞且未决”的信�
 - **sigprocmask 的 `how`**：`SIG_BLOCK`（并集）/ `SIG_UNBLOCK`（移除）/ `SIG_SETMASK`（直接设定）
 - **返回值**：本组函数成功返回 **0**（-1 失败）；`sigismember` 特殊：1=在集 / 0=不在 / -1=错
 - **已知要点**：对应 M3D5 下午 **04-信号屏蔽字和未决信号集**——`sigprocmask` 操作**阻塞位图**（置 1=屏蔽，收到后卡在未决），`sigpending` 读**未决位图**（产生即翻 1、处理完翻 0）
-- ⏳ **注意点/易错点（待 M3D6 补全）**：`sigemptyset` 必须先于 addset 调用（否则集未初始化）；屏蔽某信号后它仍会**未决**（不丢失，只是不递达），解除屏蔽立即递达；`sigprocmask` 在多线程中只影响调用线程
+- **注意点**：
+  - `sigemptyset` 必须**先于** `sigaddset` 调用（否则集未初始化，位图是随机值）
+  - `sigprocmask(how, set, oldset)`：`SIG_BLOCK`(并集)/`SIG_UNBLOCK`(移除)/`SIG_SETMASK`(直接设定)；`oldset` 可取旧屏蔽字（传 `NULL` 不关心）
+  - `sigpending(set)` 取"已产生且被阻塞、尚未递达"的信号集；`sigismember` 逐位查（1 在 / 0 不在），常配合 `for` 循环打印调试
+  - 多线程中 `sigprocmask` 只影响**调用线程**；进程级用 `sigprocmask`，线程级用 `pthread_sigmask`
+- **易错点**：
+  - ⚠️ **屏蔽 ≠ 忽略**：屏蔽只是让信号"暂不递达"，它仍会进入 pending 集、**不丢失**，解除屏蔽立即递达（mask_demo 亲验：pending 打印第 2 位=1，解除后 handler 立刻打印 "hello,sigprocmask"）；而"忽略"是信号被直接丢弃、永不触发
+  - pending 集用 `sigpending` 读，别和"屏蔽字"搞混：屏蔽字=我还不想收哪些；未决集=已经来了但我还没收的
+  - 打印 pending 是排查"信号好像丢了"的利器——信号其实常在 pending 里等你解除屏蔽
 
 ### 10.7 M3D6 后回填清单（勾掉本骨架的 ⏳）
 - [x] 10.0 四要素表：12 个核心信号已列（🧪 标出上午亲验 5 个）；待 `man 7 signal` 核对编号/事件/默认动作无偏差
-- [ ] 10.1 kill：权限边界、pid 取值陷阱、`sig=0` 探测
-- [ ] 10.2 alarm：与 sleep 冲突、子进程不继承
-- [ ] 10.3 setitimer：结构体初始化、三种 which 区别、`it_interval=0` 一次性
-- [ ] 10.4 signal：自动复位不可靠问题
-- [ ] 10.5 sigaction：`sa_mask`/`sa_flags` 实战、`SIGKILL`/`SIGSTOP` 不可捕、handler 可重入
-- [ ] 10.6 屏蔽字/未决集：阻塞≠忽略、未决信号不丢失、解除即递达
+- [x] 10.1 kill：权限边界、pid 取值陷阱、`sig=0` 探测（上午 kill_demo 亲验：发 SIGUSR1 进 handler、SIGKILL 强杀不可捕、wait 回收）
+- [x] 10.2 alarm：与 sleep 冲突、子进程不继承（上午 alarm.c 亲验默认 Alarm clock 终止；alarm_demo 原版写错 SIGUSR1 的 bug 已记录）
+- [x] 10.3 setitimer：结构体初始化、三种 which 区别、`it_interval=0` 一次性（上午 setitimer_demo 亲验周期 1s×5 次退出、零警告）
+- [x] 10.4 signal：自动复位不可靠问题、handler 可重入、unused-parameter 静音（上午四程序统一验证）
+- [x] 10.5 sigaction：`sa_mask`/`sa_flags`/`SA_RESTART` 实战、`SIGKILL`/`SIGSTOP` 不可捕、handler 可重入、标准信号不排队（下午 sigact_demo 亲验：三次 Ctrl+C 稳定进 handler、handler 内 sleep 期间再按只补递达一次）
+- [x] 10.6 屏蔽字/未决集：阻塞≠忽略、未决信号不丢失、解除即递达（下午 mask_demo 亲验：屏蔽 SIGINT 后 kill 自送 → pending 第2位=1 → 解除后 handler 打印 "hello,sigprocmask"）
 - [ ] 进阶：借助信号捕捉回收子进程（`SIGCHLD` + `waitpid(WNOHANG)` 循环）
 - [ ] 进阶：慢速系统调用被信号中断（`SA_RESTART`）
 - [ ] 把信号相关易错点补进第 8 节实战血泪表
