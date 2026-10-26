@@ -82,12 +82,12 @@ pid_t wait(int *status);
 - **注意点**：等价于 `waitpid(-1, &status, 0)`——阻塞直到任一子进程结束
 - **回收宏（配 status 用）**：
 
-| 宏 | 含义 |
-|---|---|
-| `WIFEXITED(status)` | 子是否正常退出（return/exit） |
-| `WEXITSTATUS(status)` | 正常退出时的退出码（配合上一宏） |
-| `WIFSIGNALED(status)` | 子是否被信号杀死 |
-| `WTERMSIG(status)` | 若是信号杀死，返回信号编号 |
+| 宏                     | 含义                   |
+| --------------------- | -------------------- |
+| `WIFEXITED(status)`   | 子是否正常退出（return/exit） |
+| `WEXITSTATUS(status)` | 正常退出时的退出码（配合上一宏）     |
+| `WIFSIGNALED(status)` | 子是否被信号杀死             |
+| `WTERMSIG(status)`    | 若是信号杀死，返回信号编号        |
 
 - **易错点**：
   - 想取退出码却传了 `NULL` → 取不到
@@ -499,6 +499,16 @@ int sigpending(sigset_t *set);               // 取“阻塞且未决”的信�
 - [x] 10.4 signal：自动复位不可靠问题、handler 可重入、unused-parameter 静音（上午四程序统一验证）
 - [x] 10.5 sigaction：`sa_mask`/`sa_flags`/`SA_RESTART` 实战、`SIGKILL`/`SIGSTOP` 不可捕、handler 可重入、标准信号不排队（下午 sigact_demo 亲验：三次 Ctrl+C 稳定进 handler、handler 内 sleep 期间再按只补递达一次）
 - [x] 10.6 屏蔽字/未决集：阻塞≠忽略、未决信号不丢失、解除即递达（下午 mask_demo 亲验：屏蔽 SIGINT 后 kill 自送 → pending 第2位=1 → 解除后 handler 打印 "hello,sigprocmask"）
-- [ ] 进阶：借助信号捕捉回收子进程（`SIGCHLD` + `waitpid(WNOHANG)` 循环）
-- [ ] 进阶：慢速系统调用被信号中断（`SA_RESTART`）
+- [x] 进阶：借助信号捕捉回收子进程（`SIGCHLD` + `waitpid(WNOHANG)` 循环）（M3D7 child_recycle.c 亲验）
+  - 亲验：`fork()` 10 个子（子 `exit(i)` 退码 0~9），父先 `sigaction(SIGCHLD,&act,NULL)` 注册、**再**循环 `fork`；handler 内 `while((wpid=waitpid(-1,&status,WNOHANG))>0){ if(WIFEXITED(status)) printf("recycle child pid=%d, exit code=%d\n",wpid,WEXITSTATUS(status)); }`；运行 10 子全部被回收、`ps ajx` 无 `Z` 僵尸、编译零警告 ✅
+  - **为什么必须 `while` 循环**：SIGCHLD 是**标准信号不排队**，10 个子几乎同时退出只触发**一次** handler，单次 `waitpid` 会漏回收 → 其余变僵尸（`Z`）；循环把这次"积压"的全部回收干净
+  - **必须用 `WNOHANG`**：handler 内禁用阻塞 `wait()`（没子可回收时会卡死父进程）；`WNOHANG` 非阻塞，没子可回收时立即返回 0 跳出循环
+  - **`WIFEXITED/WEXITSTATUS` 只决定打印什么、不影响回收**：循环里的 `waitpid` 无论子正常退出还是被信号杀都会回收它（不漏僵尸）；只是被信号杀时 `WIFEXITED` 为假、不打印 exit code 而已
+  - **注册顺序**：父先 `sigaction` 装好 handler 再 `fork`，子继承后 `exit` 给父发 SIGCHLD → 父 handler 回收；顺序反了可能漏掉早期子
+  - **对比 `signal(SIGCHLD, SIG_IGN)`（M3D7 child_ign.c 亲验）**：`act.sa_handler=SIG_IGN` 后 `sigaction(SIGCHLD,&act,NULL)`，fork 10 子 exit(i)，父 `sleep(2)` 后退出；运行**无任何 "recycle" 打印**、`ps ajx` **无 Z 僵尸** ✅——证明显式忽略时内核**自动回收**子进程、不产生僵尸，但**拿不到退出状态**（无 handler 可读 status）
+  - ⚠️ **关键易混：SIGCHLD 默认动作就是 Ign，但"默认 Ign"≠"显式 SIG_IGN"**：
+    - **默认（什么都不做）**：SIGCHLD 默认动作虽是 Ign，但内核**不会**自动回收子进程 → 子退出变僵尸（Z），必须父 `wait()`——这就是 M3D2/D3 不 wait 就见 Z+ 的原因
+    - **显式 `signal(SIGCHLD,SIG_IGN)` / `sigaction` 设 `SIG_IGN`**：这是 **Linux/SysV 特殊语义**，内核会在子退出时**立即自动回收**、不产生僵尸
+    - 二者行为天差地别，面试/实战常考；可移植代码不应依赖"显式 IGN 自动回收"，需要退出状态时一律用**捕捉版**（child_recycle.c）
+- [ ] 进阶：慢速系统调用被信号中断（`SA_RESTART`）（10.5 已讲理论；待 TCP 服务器实战验证 EINTR 处理）
 - [ ] 把信号相关易错点补进第 8 节实战血泪表
