@@ -512,3 +512,69 @@ int sigpending(sigset_t *set);               // 取“阻塞且未决”的信�
     - 二者行为天差地别，面试/实战常考；可移植代码不应依赖"显式 IGN 自动回收"，需要退出状态时一律用**捕捉版**（child_recycle.c）
 - [ ] 进阶：慢速系统调用被信号中断（`SA_RESTART`）（10.5 已讲理论；待 TCP 服务器实战验证 EINTR 处理）
 - [ ] 把信号相关易错点补进第 8 节实战血泪表
+
+---
+
+## 11. 线程（pthread）基础原语 ⭐ M3D8 新增
+
+> **统一规则**：头文件 `<pthread.h>`；**编译必须 `-pthread`**（pthread 不在 libc，漏了报 `undefined reference to pthread_create`；用 `-pthread` 而非 `-lpthread`，前者还定义 `_REENTRANT` 让 libc 走可重入版本）；**pthread 系列函数成功返回 0、失败返回错误码且不设置 errno** —— 判 `ret != 0` 后用 `strerror(ret)` 打错，**不能用 perror**。
+
+### 11.1 pthread_create（创建线程）
+```c
+#include <pthread.h>
+int pthread_create(pthread_t *thread, const pthread_attr_t *attr,
+                   void *(*start_routine)(void *), void *arg);
+```
+- **参数**：`thread` 出参收新线程 tid；`attr` 线程属性（`NULL`=默认 JOINABLE）；`start_routine` 线程函数（**签名必须 `void* fn(void*)`**）；`arg` 传给线程函数的参数
+- **返回值**：成功 **0**；失败返回**错误码**（不设 errno、不写 thread）
+- 🧪 **亲验要点**（pthread_create.c）：
+  - 5 线程 + 主线程 **pid 全相同**（同进程共享地址空间）、tid 各不同 —— 线程 vs fork 的根本区别铁证
+  - 传参用 `(void*)(long)i` **传值**，线程内 `long i = (long)arg` 取回；传 `&i` 地址会踩"循环快、线程慢拿到错值"坑
+  - 线程函数漏 `return NULL` → 警告 control reaches end of non-void function
+- **易错点**：
+  - 漏 `-pthread` → `undefined reference to pthread_create`（新人第一大错）
+  - 签名写错（`void fn()` / `int fn()`）→ 类型不兼容 `void*(*)(void*)`
+  - 取参笔误：`int i = (int)i;`（本意取 arg 却自赋值，M3D8 真实踩坑 → 打印垃圾值 -1542590405）；应 `long i = (long)arg;`
+
+### 11.2 pthread_self（取自身 tid）
+```c
+pthread_t pthread_self(void);
+```
+- 🧪 **亲验要点**：`pthread_t` 在 NPTL 实现里本质是**线程描述符（struct pthread）的内存地址**；打印用 `%lu`（64 位 Linux 可行但非可移植，POSIX 只保证同进程内"可比"）
+- **易错点（重要）**：**pthread_t 值会被复用** ——「创建 → 立刻 join 回收 → 再创建下一个」串行模式下，前一线程描述符内存被释放，下一线程分配到**同一地址** → `pthread_self()` 打印值相同（pthread_join_more.c 亲验：5 线程 tid 全部相同，仅 main 不同）。想看 tid 各异：**先全部 create 再统一 join**。故 **pthread_t 不能当线程的永久身份证**（对比 pid 短期内不复用）
+
+### 11.3 pthread_join（阻塞回收 + 取返回值）
+```c
+int pthread_join(pthread_t thread, void **retval);
+```
+- **参数**：`thread` 目标线程 tid（同进程、未 detach）；`retval` 出参收线程 `return`/`pthread_exit` 的值（不关心传 `NULL`）
+- **返回值**：成功 0；失败错误码（如对已 detach 线程 join → `EINVAL`=22）
+- 🧪 **亲验要点**（pthread_join.c + pthread_join_more.c）：
+  - 单线程版：线程 `return (void*)123`，主线程 `void *res; pthread_join(tid, (void**)&res); printf("%ld", (long)res);` → 打印 123 ✅
+  - 批量版：5 线程各 `return (void*)(i*10)`，循环 create+join → `return code=10/20/30/40/50` 全对 ✅
+- **注意点**：join 是**阻塞**精确回收（对比 `waitpid(WNOHANG)` 非阻塞轮询）；"回收 + 取退出状态"双重作用，对标进程的 `waitpid`
+- **易错点**：
+  - 第二参类型是 `void**`，传 `&res`（`res` 是 `void*`）
+  - 对已 detach 线程 join → `EINVAL`（⏳ M3D9 detach_demo 亲验）
+  - 多个线程对**同一 tid** join → 未定义行为；join 自己 → 死锁/EDEADLK
+
+### 11.4 pthread_exit（只退自己）
+```c
+void pthread_exit(void *retval);
+```
+- **要点**：`retval` 即线程返回值（join 可取）；**只终止调用线程** —— 主线程调 `pthread_exit(NULL)` 后进程继续活到其他线程结束；对比主线程 `return`/`exit()` 会**带走整个进程**（工作线程全被强杀）
+- 🧪 **亲验要点**：pthread_join.c / join_more.c 主线程末尾 `pthread_exit(NULL)`，join 完自然退出、无残留 ✅
+- **易错点**：`exit()`（进程级，带走全部）vs `pthread_exit()`（线程级，只退自己）——线程函数内误写 `exit(1)` 会杀死全进程
+
+### 11.5 pthread_detach（分离线程）⏳ 待 M3D9
+- 原型：`int pthread_detach(pthread_t thread);`（成功 0 / 错误码）
+- 要点：标记分离后线程结束**自动回收、无需 join**（对标进程 SIGCHLD 显式 SIG_IGN 的"内核自动回收"）；对已 detach 线程再 join → `EINVAL`(22) 铁证待亲验
+- ⏳ 亲验留 M3D9：detach_demo.c（detach → 自动回收 → 故意 join 验证 EINVAL=22）
+
+### 11.6 M3D8 回填清单
+- [x] 11.1 pthread_create：`-pthread` 链接、签名 `void*fn(void*)`、传值、pid 相同 tid 不同（亲验）
+- [x] 11.2 pthread_self：pthread_t=描述符地址、串行 join 回收后地址复用 → 5 线程 tid 相同现象（亲验）
+- [x] 11.3 pthread_join：阻塞回收 + 取返回值 `(void**)&res`、批量 join 取 `i*10`（亲验）
+- [x] 11.4 pthread_exit：只退自己、主线程 return/exit 带走全进程（亲验 + 认知）
+- [ ] 11.5 pthread_detach：自动回收、join 已 detach 报 EINVAL（⏳ 留 M3D9）
+- [ ] 线程同步（互斥锁/条件变量/信号量）→ M3D9 起另立新节
