@@ -16,6 +16,7 @@
 | **僵尸进程** | 子退出、父不回收，子变成 `Z`（defunct）占着 PID 表项 | `ps ajx` 见 `Z+ [zoom] <defunct>`；kill 父后 init 收尸 |
 | **孤儿进程** | 父先死，子被 init（WSL 是 `/init`，pid 1）收养 | 子的 ppid 从父 PID → **28171（/init）** |
 | **IPC 四大件进度** | 管道✅ FIFO✅ 共享内存(mmap)✅ 信号✅（M3D6 完成 kill/alarm/setitimer/signal/sigaction/信号集；M3D7 用 SIGCHLD 回收子进程进阶） | — |
+| **线程模块进度** | 基础原语✅（M3D8：create/self/join/exit/detach）· 互斥锁✅（M3D9：race 竞态 → mutex 修复）· try 锁/死锁/读写锁/条件变量/信号量 ⬜（M3D10） | mutex：并发无锁 **208515** vs 加锁 **500000** |
 | **管道读写行为 2×2** | 读空阻塞 / 写端全关返回 0(EOF) / 写满阻塞 / 无读端写→SIGPIPE | 64k 实测卡满；`echo $?` 得 **141 = 128+13** |
 
 ---
@@ -566,15 +567,91 @@ void pthread_exit(void *retval);
 - 🧪 **亲验要点**：pthread_join.c / join_more.c 主线程末尾 `pthread_exit(NULL)`，join 完自然退出、无残留 ✅
 - **易错点**：`exit()`（进程级，带走全部）vs `pthread_exit()`（线程级，只退自己）——线程函数内误写 `exit(1)` 会杀死全进程
 
-### 11.5 pthread_detach（分离线程）⏳ 待 M3D9
-- 原型：`int pthread_detach(pthread_t thread);`（成功 0 / 错误码）
-- 要点：标记分离后线程结束**自动回收、无需 join**（对标进程 SIGCHLD 显式 SIG_IGN 的"内核自动回收"）；对已 detach 线程再 join → `EINVAL`(22) 铁证待亲验
-- ⏳ 亲验留 M3D9：detach_demo.c（detach → 自动回收 → 故意 join 验证 EINVAL=22）
+### 11.5 pthread_detach（分离线程）🧪 M3D9 亲验
+```c
+#include <pthread.h>
+int pthread_detach(pthread_t thread);
+```
+- **参数**：`thread` 已创建的线程 tid（也可在创建时通过 `attr` 设 `detachstate=PTHREAD_CREATE_DETACHED` 实现"出生即分离"）
+- **返回值**：成功 **0**；失败返回**错误码**（不设 errno，用 `strerror(ret)` 打错）
+- **要点**：标记分离后线程结束**自动回收、无需（也不能）join**（对标进程 `signal(SIGCHLD, SIG_IGN)` 的"内核自动回收"——但进程版拿不到退出状态，这里同理拿不到）
+- 🧪 **亲验要点**（pthread_detach.c，`gcc -Wall -Wextra -pthread` 零警告）：创建线程 → `pthread_detach(tid)` 成功 → 紧接着 `pthread_join(tid, NULL)` → 运行打印 `pthread_join error : Invalid argument` ✅，即 **`EINVAL`(22) 铁证**：**join 与 detach 二选一、不可兼得**，对已分离线程再 join 立即失败、不会等待线程结束（输出顺序上 join 报错先于线程自身的 printf 出现，正说明它同步返回、没阻塞等线程）
+- **易错点**：
+  - ⚠️ **detach 后再 join 必 `EINVAL`**：这是面试常问点，今天已亲手验证
+  - 分离线程结束由系统自动回收，没有"僵尸线程"概念（不像进程漏 wait 变 Z），但**也拿不到返回值**——想要返回值就必须 join（二者互斥）
+  - 主线程若想"不等待但也不阻塞"，用 detach；想要线程的退出状态，用 join；不要两者都试
 
 ### 11.6 M3D8 回填清单
 - [x] 11.1 pthread_create：`-pthread` 链接、签名 `void*fn(void*)`、传值、pid 相同 tid 不同（亲验）
 - [x] 11.2 pthread_self：pthread_t=描述符地址、串行 join 回收后地址复用 → 5 线程 tid 相同现象（亲验）
 - [x] 11.3 pthread_join：阻塞回收 + 取返回值 `(void**)&res`、批量 join 取 `i*10`（亲验）
 - [x] 11.4 pthread_exit：只退自己、主线程 return/exit 带走全进程（亲验 + 认知）
-- [ ] 11.5 pthread_detach：自动回收、join 已 detach 报 EINVAL（⏳ 留 M3D9）
-- [ ] 线程同步（互斥锁/条件变量/信号量）→ M3D9 起另立新节
+- [x] 11.5 pthread_detach：自动回收、detach 后 join 报 EINVAL=22 铁证（M3D9 pthread_detach.c 亲验：零警告、运行打印 `pthread_join error : Invalid argument`）
+- [x] 线程同步（互斥锁/条件变量/信号量）→ **第 12 节**（M3D9 完成互斥锁部分；try 锁/死锁/读写锁/条件变量/信号量 留 M3D10）
+
+---
+
+## 12. 线程同步（互斥锁 mutex）⭐ M3D9 新增
+
+> **统一规则**：头文件 `<pthread.h>`；编译必须 `-pthread`；**pthread 系列函数成功返回 0、失败返回错误码且不设置 errno** —— 判 `ret != 0` 后用 `strerror(ret)` 打错，**不能用 perror**。
+
+### 12.1 概念：竞态条件（race condition）与临界区
+- **竞态条件**：程序结果**依赖线程执行时序**，换个时序结果就变 → 结果不可复现、不可预测
+- **`cnt++` 不是原子操作**：编译后是 **load → add → store 三步**。两个线程都读到 100，各自加 1 都写回 101 → 两次自增只加了一次（**丢失更新 lost update**）
+- **临界区**：访问共享资源的那段代码；**同步的目标 = 保证同一时刻只有一个线程进入临界区**
+- 🧪 **亲验（race_demo.c）**：5 线程 × 10 万次无锁自增，理论 500000，实测 **208515**（且每次运行都不同）→ 竞态坐实
+
+### 12.2 互斥锁类型与初始化/销毁
+```c
+#include <pthread.h>
+pthread_mutex_t mutex;                                          // 类型声明
+int pthread_mutex_init(pthread_mutex_t *mutex,
+                       const pthread_mutexattr_t *attr);        // 动态初始化
+int pthread_mutex_destroy(pthread_mutex_t *mutex);              // 销毁
+```
+- **两种初始化**（二选一，别混用）：
+  - **静态**：`pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;`（全局/静态变量用，可省掉 init/destroy）
+  - **动态**：`pthread_mutex_init(&mutex, NULL)`（`attr=NULL` 用默认属性；可配属性如可重入/健壮锁）
+- **返回值**：成功 0 / 错误码（不设 errno）
+- **易错点**：
+  - 已用 `PTHREAD_MUTEX_INITIALIZER` 静态初始化的锁，**不要再调 init**（重复初始化未定义）
+  - 动态初始化的锁用完**必须 destroy**；且 destroy 前不能有线程还持有它
+  - 锁**必须先初始化再使用**（未初始化的 `pthread_mutex_t` 内容是随机内存 → 锁行为未定义、可能死锁）
+
+### 12.3 pthread_mutex_lock / unlock（核心）
+```c
+int pthread_mutex_lock(pthread_mutex_t *mutex);     // 加锁（阻塞）
+int pthread_mutex_unlock(pthread_mutex_t *mutex);   // 解锁
+```
+- **lock 是阻塞的**：锁被别人持有 → 本线程进入内核睡眠等待（futex），**不是忙等**、也不是"跳过"
+- **lock/unlock 必须配对**：漏 unlock → 后续所有线程永远阻塞 → **死锁**
+- **默认 mutex 不可重入**：同一线程连续 lock 两次 → `EDEADLK`；解锁必须由**加锁的那个线程**来做
+- **返回值必须查**：`pthread_mutex_lock` 失败时**不保证锁已被获取**（如 `EDEADLK`/`EOWNERDEAD`）→ 失败分支**不能**去 unlock，否则解锁一把没持有的锁
+- 🧪 **亲验（mutex_demo.c）**：lock/unlock 返回值全查、只锁 `cnt++` 一行 → 5 线程 × 10 万次 = **精确 500000**，零警告、连跑稳定
+
+### 12.4 M3D9 实测对照表：并发 × 锁 的 2×2 矩阵（本章精华）
+| 线程结构 | 无锁 | 有锁 |
+|---|---|---|
+| **串行**（create 与 join 同一循环） | 500000 ✅ | 500000 ✅ |
+| **并发**（create 一个循环 + join 一个循环） | **208515 ❌**（race_demo.c） | **500000 ✅**（mutex_demo.c） |
+
+- ⚠️ **核心结论：并发才是竞态的根源，互斥锁才是解药**。串行结构下**即使完全不写 lock**，结果也是 500000 —— 也就是说"结果对"并不等于"代码对"
+- ⚠️ **面试高频陷阱**：只跑一次看到 500000 就以为没 bug，误判为"这个程序本来就是线程安全的"。**必须构造真并发**（create / join 拆成两个循环）才能暴露问题
+- 顺带解释 M3D8 现象：串行 create→join 时，pthread_t 描述符内存被复用 → 5 线程 tid 打印全相同；改成两段循环后线程真正并存，tid 各不相同
+
+### 12.5 锁粒度（性能与正确性的取舍）
+- **只锁必要的临界区**：本例只锁 `cnt++` 一行；不要把整个 `for` 循环、`printf` 一起锁进去
+- 锁的范围越大 → 阻塞其他线程越久 → **并发度越低、吞吐越低**（加锁后肉眼可见变慢，这是 futex 系统调用的开销）
+- 原则：**用性能换正确性**；正确性优先，粒度在保证原子性的前提下尽量小
+
+### 12.6 M3D9 回填清单
+- [x] 12.1 竞态条件：`cnt++` 三步非原子、丢失更新（race_demo.c 亲验 208515）
+- [x] 12.2 互斥锁初始化：动态 `init`/`destroy`（mutex_demo.c 亲验）；静态 `PTHREAD_MUTEX_INITIALIZER`
+- [x] 12.3 lock/unlock：阻塞语义、必须配对、不可重入、返回值必查（用 strerror）
+- [x] 12.4 race ↔ mutex 实测对照（2×2 矩阵，含"串行+无锁也 500000"的反直觉结论）
+- [x] 12.5 锁粒度：只锁 `cnt++` 一行
+- [ ] `pthread_mutex_trylock`（非阻塞尝试加锁）→ M3D10
+- [ ] 死锁两种成因与解法（同一线程锁两把锁 / 多线程抢多把锁）→ M3D10
+- [ ] 读写锁 `pthread_rwlock_*` → M3D10
+- [ ] 条件变量 `pthread_cond_*` → M3D10
+- [ ] 信号量 `sem_*` → M3D10
