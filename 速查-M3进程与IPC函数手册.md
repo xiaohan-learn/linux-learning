@@ -650,8 +650,91 @@ int pthread_mutex_unlock(pthread_mutex_t *mutex);   // 解锁
 - [x] 12.3 lock/unlock：阻塞语义、必须配对、不可重入、返回值必查（用 strerror）
 - [x] 12.4 race ↔ mutex 实测对照（2×2 矩阵，含"串行+无锁也 500000"的反直觉结论）
 - [x] 12.5 锁粒度：只锁 `cnt++` 一行
-- [ ] `pthread_mutex_trylock`（非阻塞尝试加锁）→ M3D10
-- [ ] 死锁两种成因与解法（同一线程锁两把锁 / 多线程抢多把锁）→ M3D10
-- [ ] 读写锁 `pthread_rwlock_*` → M3D10
-- [ ] 条件变量 `pthread_cond_*` → M3D10
-- [ ] 信号量 `sem_*` → M3D10
+- [x] `pthread_mutex_trylock`（非阻塞尝试加锁）→ M3D10 ✅
+- [x] 死锁两种成因与解法（同一线程锁两把锁 / 多线程抢多把锁）→ M3D10 ✅
+- [x] 读写锁 `pthread_rwlock_*` → M3D10 ✅
+- [x] 条件变量 `pthread_cond_*` → M3D10 ✅
+- [ ] 信号量 `sem_*` → M3D11
+
+---
+
+## 13. 线程同步续（trylock / 死锁 / 读写锁）⭐ M3D10 新增
+
+> 统一规则见第 12 节开头：`<pthread.h>` + `-pthread` + 返回错误码用 `strerror(ret)` 打错。
+
+### 13.1 pthread_mutex_trylock（非阻塞尝试加锁）🧪 M3D10 亲验
+```c
+int pthread_mutex_trylock(pthread_mutex_t *mutex);
+```
+- **要点**：与 `pthread_mutex_lock` 不同，**不阻塞**——锁空闲则立即获取返回 0；锁被占用则**立即返回 `EBUSY`(16)** 而非等待
+- **使用姿势**：`if(ret==0){拿到锁;...;pthread_mutex_unlock;} else if(ret==EBUSY){锁被占，去干别的/稍后重试;} else {其他错误;}`
+- **铁律**：**只有真正 trylock 成功的线程才能 unlock**；失败的线程绝不能 unlock（解锁没持有的锁 = 未定义行为）
+- 🧪 **亲验（trylock.c）**：main 先 `lock` 持锁 → 子线程 `trylock` 返回 `EBUSY(16)` 打印"锁被占用"；main `unlock` 后再次建子线程 `trylock` 成功 → 一次运行演示"失败+成功"两条路径
+
+### 13.2 死锁（deadlock）🧪 M3D10 亲验
+- **四要件（Coffman）**：① 互斥（资源独占）② 占有且等待（持一把等另一把）③ 不可剥夺（锁不能抢）④ **循环等待**（A 等 B、B 等 A）—— 四者同时成立才死锁
+- **两类常见场景**：
+  - 同一线程对一把**不可重入** mutex 连续 lock 两次 → `EDEADLK` 自锁
+  - **多线程抢多把锁、加锁顺序相反**（最典型）：t1 持 A 等 B，t2 持 B 等 A → 循环等待
+- **解法①：全局定序法（首选）**：所有线程按**固定顺序**加锁（如一律 A→B）。t1 持 A 时 t2 想拿 A 只能阻塞等 t1 释放，不再各持一把互等 → 死锁消除。🧪 亲验 `deadlock_fix.c`（t2 改成也先锁 A 后锁 B，干净退出）
+- **解法②：trylock 回退重试法**：先 lock 第一把 → `trylock` 第二把；失败(`EBUSY`)则**先释放已持有的第一把**、sleep 后重试。🧪 亲验 `deadlock_trylock.c`（打印"get B fail, release lockA, retry"后下一轮成功）。⚠️ **缺点：有活锁(livelock)风险**（两线程同时回退又同时抢），且代码更复杂——一般不如定序法推荐
+- 🧪 **复现（deadlock.c）**：t1(A→B)、t2(B→A)，各 `sleep(1)` 确保都拿到第一把锁后再抢第二把 → 稳定卡死，提示符不返回；`kill -9` 退出
+
+### 13.3 读写锁 `pthread_rwlock_t` 🧪 M3D10 亲验
+```c
+pthread_rwlock_t rw;
+pthread_rwlock_init(&rw, NULL);          // 也可用 PTHREAD_RWLOCK_INITIALIZER
+pthread_rwlock_rdlock(&rw);              // 读锁：共享（多读者可同时持有）
+pthread_rwlock_wrlock(&rw);              // 写锁：独占（与任何读/写互斥）
+pthread_rwlock_unlock(&rw);              // 读锁写锁都用它释放
+pthread_rwlock_destroy(&rw);
+```
+- **语义**：**多读可并发、读写互斥、写写互斥**——适合"读多写少"场景（比纯 mutex 并发度高）
+- **易错点（血泪）**：`rdlock` 是**共享**的，多个读者**真正并发**执行临界区 → 若在临界区内并发修改某个全局计数（如 `readers_in++`），**该计数本身也会数据竞争**！必须用**另一把 mutex** 单独保护这个计数，且只在"自增/判断/自减"那一下加锁，**别把 sleep 罩进去**（否则读者被这把 mutex 串行化，失去 rwlock 意义）。🧪 亲验 `rwlock.c`：初版 `readers_in++` 裸写在 rdlock 区 → 输出乱序(1/3/2)；加 `cnt_mutex` 后严格 1→2→3，写者看到 0（正确）
+
+### 13.4 M3D10 回填清单（同步续）
+- [x] 13.1 trylock：EBUSY=16、成功才 unlock、两路径演示（trylock.c 亲验）
+- [x] 13.2 死锁：四要件 / 顺序相反场景 / 定序法 + trylock 回退两解法（deadlock.c / deadlock_fix.c / deadlock_trylock.c 亲验）
+- [x] 13.3 读写锁：rdlock 共享、wrlock 独占；rdlock 区内改全局变量仍需另配 mutex（rwlock.c 亲验）
+- [ ] 信号量 `sem_*` → M3D11
+
+## 14. 条件变量（condvar）⭐ M3D10 新增
+
+### 14.1 API
+```c
+pthread_cond_t cond = PTHREAD_COND_INITIALIZER;   // 也可 pthread_cond_init(&cond, NULL)
+int pthread_cond_wait(&cond, &mutex);            // 原子地"释放mutex+阻塞"，唤醒后原子地"重拿mutex"
+int pthread_cond_signal(&cond);                  // 唤醒一个等待者
+int pthread_cond_broadcast(&cond);               // 唤醒所有等待者
+int pthread_cond_destroy(&cond);
+```
+- **编译**：必须 `-pthread`；**返回错误码不设 errno**，用 `strerror(ret)` 打错
+
+### 14.2 三铁律（错一条就出 bug）
+1. **必须配 mutex**：条件变量本身不保护数据，被等待的"共享条件"（如 `ready`）必须由 mutex 保护
+2. **`while` 复查，不是 `if`**：`while(条件不满足) pthread_cond_wait(...)`。防**虚假唤醒**(spurious wakeup) 和"多消费者时别人抢先消费"；醒来后无条件再判一次
+3. **先改共享状态、再 signal**：生产者在 `ready=1` **之后**才 `pthread_cond_signal` —— 保证消费者被唤醒、`while` 复查时状态已为真，不会漏唤醒
+
+### 14.3 为什么 wait 要传 mutex
+`pthread_cond_wait` 内部**原子地释放 mutex 再阻塞**；被唤醒时**原子地重新获取 mutex**。若 wait 不释放锁，生产者永远拿不到 mutex → 死锁。所以调用顺序必须是 `lock → while(!cond) wait → 处理 → unlock`
+
+### 14.4 执行轨迹（单生产者+单消费者）🧪 M3D10 亲验
+```
+消费者持锁 → ready==0 → 打印"需要等待" → cond_wait(释放锁,阻塞)
+生产者 sleep(1) → 持锁 → ready=1 → signal → 解锁
+消费者被唤醒 → 重拿锁 → while 复查 ready==1 → 退出循环 → 消费(ready=0) → 解锁
+```
+🧪 亲验（cond.c，零警告）：输出 `没有产品，消费者1需要等待,ready=0` → `生产者2产品就绪,发送signal信号,ready=1` → `产品就绪，消费者1可以消费,ready=1`，干净退出
+
+### 14.5 易错点
+- `if(cond) wait` 误用（应为 `while`）→ 虚假唤醒后带错误状态继续 → 数据错乱
+- 先 `signal` 再改状态 → 竞态窗口 → 漏唤醒
+- 忘记 `pthread_cond_wait` 要传 mutex → 编译不过或逻辑错
+- 多消费者场景用 `signal` 只醒一个够用；多线程混战才考虑 `broadcast`
+
+### 14.6 M3D10 回填清单（condvar）
+- [x] 14.1 API：init/wait/signal/broadcast/destroy（cond.c 亲验）
+- [x] 14.2 三铁律：配 mutex / while 复查 / 先改状态再 signal
+- [x] 14.3 wait 原子释放锁的必要性（不死锁）
+- [x] 14.4 生产者-消费者最小版执行轨迹
+- [ ] 信号量 `sem_*` / 多缓冲生产者消费者 → M3D11
