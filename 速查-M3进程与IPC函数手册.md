@@ -16,7 +16,7 @@
 | **僵尸进程** | 子退出、父不回收，子变成 `Z`（defunct）占着 PID 表项 | `ps ajx` 见 `Z+ [zoom] <defunct>`；kill 父后 init 收尸 |
 | **孤儿进程** | 父先死，子被 init（WSL 是 `/init`，pid 1）收养 | 子的 ppid 从父 PID → **28171（/init）** |
 | **IPC 四大件进度** | 管道✅ FIFO✅ 共享内存(mmap)✅ 信号✅（M3D6 完成 kill/alarm/setitimer/signal/sigaction/信号集；M3D7 用 SIGCHLD 回收子进程进阶） | — |
-| **线程模块进度** | 基础原语✅（M3D8：create/self/join/exit/detach）· 互斥锁✅（M3D9：race 竞态 → mutex 修复）· try 锁/死锁/读写锁/条件变量/信号量 ⬜（M3D10） | mutex：并发无锁 **208515** vs 加锁 **500000** |
+| **线程模块进度** | 基础原语✅（M3D8：create/self/join/exit/detach）· 互斥锁✅（M3D9：race 竞态 → mutex 修复）· try 锁/死锁/读写锁/条件变量/信号量 ✅（M3D10 + M3D11 完成） | mutex：并发无锁 **208515** vs 加锁 **500000** |
 | **管道读写行为 2×2** | 读空阻塞 / 写端全关返回 0(EOF) / 写满阻塞 / 无读端写→SIGPIPE | 64k 实测卡满；`echo $?` 得 **141 = 128+13** |
 
 ---
@@ -654,7 +654,7 @@ int pthread_mutex_unlock(pthread_mutex_t *mutex);   // 解锁
 - [x] 死锁两种成因与解法（同一线程锁两把锁 / 多线程抢多把锁）→ M3D10 ✅
 - [x] 读写锁 `pthread_rwlock_*` → M3D10 ✅
 - [x] 条件变量 `pthread_cond_*` → M3D10 ✅
-- [ ] 信号量 `sem_*` → M3D11
+- [x] 信号量 `sem_*` → M3D11（见第 15 节）
 
 ---
 
@@ -696,7 +696,7 @@ pthread_rwlock_destroy(&rw);
 - [x] 13.1 trylock：EBUSY=16、成功才 unlock、两路径演示（trylock.c 亲验）
 - [x] 13.2 死锁：四要件 / 顺序相反场景 / 定序法 + trylock 回退两解法（deadlock.c / deadlock_fix.c / deadlock_trylock.c 亲验）
 - [x] 13.3 读写锁：rdlock 共享、wrlock 独占；rdlock 区内改全局变量仍需另配 mutex（rwlock.c 亲验）
-- [ ] 信号量 `sem_*` → M3D11
+- [x] 信号量 `sem_*` → M3D11（见第 15 节）
 
 ## 14. 条件变量（condvar）⭐ M3D10 新增
 
@@ -737,4 +737,57 @@ int pthread_cond_destroy(&cond);
 - [x] 14.2 三铁律：配 mutex / while 复查 / 先改状态再 signal
 - [x] 14.3 wait 原子释放锁的必要性（不死锁）
 - [x] 14.4 生产者-消费者最小版执行轨迹
-- [ ] 信号量 `sem_*` / 多缓冲生产者消费者 → M3D11
+- [x] 信号量 `sem_*` / 多缓冲生产者消费者 → M3D11（见第 15 节）
+
+---
+
+## 15. 信号量（semaphore）⭐ M3D11 新增
+
+### 15.1 API
+```c
+#include <semaphore.h>
+sem_t sem;
+int sem_init(sem_t *sem, int pshared, unsigned int value);  // pshared=0线程间; value=初值
+int sem_wait(sem_t *sem);    // P 操作：value>0 则 -1 继续；否则阻塞到有资源
+int sem_post(sem_t *sem);    // V 操作：value+1，若有等待者则唤醒一个
+int sem_destroy(sem_t *sem);
+int sem_getvalue(sem_t *sem, int *sval);  // 读当前值（仅诊断用，非原子）
+```
+- **编译**：`-pthread`（信号量在 pthread 库里）
+- **错误处理与 pthread 相反**：`sem_*` 失败返回 **-1 且置 errno** → 用 `perror` 打；`pthread_*` 返回错误码（不设 errno）→ 用 `strerror(ret)`。混用时别套错（亲验：M3D11 的 sem 全用 `perror`，pthread 走 `err()` 辅助函数，区分正确）
+
+### 15.2 两种用法
+- **二值/阻塞唤醒（初值 0）**：`sem_wait` 先阻塞，等对方 `sem_post` 才继续 → 等价"一次性事件通知"。`sem_basic.c` 亲验：消费者先 `sem_wait` 卡住，生产者 `sleep(1)` 后 `sem_post`，消费者才打印"被唤醒"。
+- **计数信号量（初值 = N）**：限流 / 资源池。`sem_limit.c` 亲验：初值 3、起 5 个线程，一次只 3 个能进临界区，另 2 个阻塞等 `sem_post` 释放名额（输出"进入"恰好 3 行，离开一个补位一个）。退化为初值 1 即 ≈ 互斥锁（但信号量无"谁持有"概念，post 可由任意线程调，与 mutex 不同）。
+
+### 15.3 三信号量生产者-消费者（环形缓冲）🧪 M3D11 亲验
+```c
+#define N 4
+sem_t empty, full, mutex;   // empty=空闲位(初N)  full=已填位(初0)  mutex=临界区锁(初1)
+int buf[N], in=0, out=0;
+// 生产者
+sem_wait(&empty);  sem_wait(&mutex);   // ⚠ 顺序：先条件信号量，再 mutex；反过来会死锁
+buf[in]=item; in=(in+1)%N;
+sem_post(&mutex);  sem_post(&full);     // 先放锁再 V（sleep 也放锁外，别持锁睡）
+// 消费者
+sem_wait(&full);   sem_wait(&mutex);
+item=buf[out]; out=(out+1)%N;
+sem_post(&mutex);  sem_post(&empty);
+```
+- **防死锁铁律**：必须先 `sem_wait(empty/full)` 再 `sem_wait(mutex)`。若反过来（先 mutex 再 empty），缓冲满时生产者握锁等 empty、消费者拿不到锁永远 V 不了 → 死锁。口诀：**先等条件信号量，再抢临界区锁**。
+- **`in`/`out` 也要 mutex 保护**：多生产者/消费者时，信号量管不了这两个共享下标，得靠 mutex，否则缓冲读写错位；验证用不变量 `empty + full == N`（临界区内快照会因"一个格子在途"出现 N-1，属正常，非 bug）。
+- 🧪 亲验（`prod_cons_sem.c`，零警告）：FIFO 配对 `producer in=i item=k` → `consumer out=i item=k`；`in/out` 在 0–3 循环；缓冲填满 4 个再抽干，无死锁无竞态。
+
+### 15.4 信号量 vs 条件变量（同一道题两种写法）
+| | condvar | semaphore |
+|---|---|---|
+| 计数 | 不计数，`signal` 只醒一个，批量场景要自己维护计数 + 循环唤醒 | 自带计数，`post` N 次自动唤醒 N 个 |
+| 配套 | 必须另配 mutex + 共享状态变量 | 信号量本身即状态 |
+| 多缓冲 PC | 较啰嗦（要自己数 filled 槽） | 三信号量直接建模，代码更短更不易错 |
+| 适用 | 一次性"事件通知"、配合 `while` 复查 | 限流、资源池、生产者消费者 |
+
+### 15.5 M3D11 回填清单（semaphore）
+- [x] 15.1 API：init/wait/post/destroy/getvalue（sem 用 perror，pthread 用 strerror 区分）
+- [x] 15.2 二值阻塞唤醒（sem_basic）+ 计数限流（sem_limit）
+- [x] 15.3 三信号量环形缓冲 PC（prod_cons_sem）：先条件后 mutex、in/out 受 mutex 保护
+- [x] 15.4 与 condvar 对照
