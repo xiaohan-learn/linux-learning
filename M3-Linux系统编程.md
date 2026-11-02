@@ -10,6 +10,21 @@ created: 2026-09-30
 > 落地项目：[[#🎯 简历项目2 TCP 服务器]]
 > 前置：[[M2-韦东山应用篇]] 的文件IO + gcc + Makefile 必须熟
 
+## 📊 进度快照（2026-11-02）
+
+> 实际开课比路线图早了 3 周（10/19 即启动）。M3 分两段走：**前半=进程/线程/IPC 全家桶（已收尾）**，**后半=system V IPC + socket + epoll + TCP 服务器（待学）**。
+
+- ✅ **前半已打通（约 60%）**：
+  - 进程：`fork`/COW、`wait`/`waitpid`、exec 族、`signal`（基础+进阶 `sigaction`/`setitimer`/`mask`）、`SIGCHLD` 回收子进程、`daemon` 初步
+  - 线程：`pthread_create`/`join`/`exit`、共享地址空间、互斥锁、读写锁、条件变量、死锁/活锁、`trylock`、POSIX 信号量
+  - IPC：`pipe`/`mkfifo`、POSIX `mmap` 共享内存、`dup`/`dup2`、信号
+  - 收官：线程同步选型决策树 + 多生产者多消费者（MPSC）capstone
+- ⬜ **后半待学（约 40%）**：
+  - System V IPC：`shmget`/`shmat` 共享内存、`msgget` 消息队列、`semget` 信号量集
+  - 网络编程：`htonl`/`htons`、`socket`→`bind`→`listen`→`accept`→`recv`/`send`、UDP、`select`/`poll`
+  - epoll：`epoll_create`/`ctl`/`wait`、LT vs ET
+  - 简历项目 2：TCP 多线程服务器（每连接一线程 → 线程池 → epoll 版）
+
 ## 📋 章节清单
 
 ### 1. 文件与 IO 进阶

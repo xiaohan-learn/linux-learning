@@ -47,11 +47,11 @@ created: 2026-09-30
 - [[速查-网络编程]]
 
 ## 当前进度（随时更新）
-- [x] M2 Day1：WSL Ubuntu 26.04 LTS 就绪，gcc 15.2.0 / make 4.4.1 已装
-- [x] M2 Day1：vimtutor 学到 Lesson 2（d/dw/de 删除类命令）
-- [ ] M2 韦东山应用篇视频跟进
-- [ ] M2 文件IO 章节（对照 C 仓库 `ch19`）
-- [ ] M2 收尾自测
+- [x] M2 韦东山应用篇（Ubuntu/vim/gcc/Makefile/文件IO）已结课
+- [x] **M3 前半（进程/线程/IPC 全家桶）已收尾**：fork→signal→管道/FIFO→mmap→pthread→mutex→rwlock/cond→信号量→MPSC capstone + 15 题总测验
+- [x] M3 进程与 IPC 函数手册（16 节，含线程同步选型决策树）已成型
+- [ ] **M3 后半待学**：System V IPC + socket + epoll + TCP 服务器项目（简历项目 2）
+- [ ] M4 V4L2 摄像头（依赖 mmap/ioctl，M3 后半的 socket 非前置，但 epoll 思路可复用）
 
 > [!tip] 怎么用这套笔记
 > - 新学一章，先在对应阶段笔记的「章节清单」里打勾
