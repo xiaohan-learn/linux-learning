@@ -7,6 +7,92 @@
 
 ---
 
+## 📑 目录（点击跳转 · GitHub / Obsidian 通用锚点）
+
+- [0. 概念速览（背诵级）](#sec0)
+- [1. 进程创建与退出](#sec1)
+  - [1.1 `fork` — 创建子进程](#sec1-1)
+  - [1.2 `getpid` / `getppid` — 取进程/父进程 ID](#sec1-2)
+  - [1.3 `exit` / `_exit` — 终止进程](#sec1-3)
+- [2. 进程回收](#sec2)
+  - [2.1 `wait` — 阻塞回收任一子进程](#sec2-1)
+  - [2.2 `waitpid` — 精确/非阻塞回收](#sec2-2)
+  - [2.3 回收宏（见 2.1 表格，实战用例）](#sec2-3)
+- [3. 程序替换 exec 族](#sec3)
+  - [3.1 `execl` / `execlp` — 替换进程映像](#sec3-1)
+- [4. 匿名管道](#sec4)
+  - [4.1 `pipe` — 创建匿名管道](#sec4-1)
+  - [4.2 `dup2` — 复制/重定向文件描述符](#sec4-2)
+- [5. 命名管道 FIFO](#sec5)
+  - [5.1 `mkfifo` — 创建命名管道](#sec5-1)
+- [6. 共享存储映射（mmap）](#sec6)
+  - [6.1 `mmap` — 建立映射区](#sec6-1)
+  - [6.2 `munmap` — 释放映射区](#sec6-2)
+  - [6.3 `ftruncate` — 撑大文件](#sec6-3)
+- [7. 配套文件 IO（M2 内容，IPC 全程依赖）](#sec7)
+  - [7.1 `open` / `close`](#sec7-1)
+  - [7.2 `read`](#sec7-2)
+  - [7.3 `write`](#sec7-3)
+  - [7.4 `lseek`](#sec7-4)
+- [8. 实战血泪易错点速记（M3 专属）](#sec8)
+- [9. 验证 / 调试工具箱](#sec9)
+- [10. 信号函数（IPC 第四件 · M3D6 进行中，骨架待补全）](#sec10)
+  - [10.0 信号四要素速查表（编号 + 名称 + 事件 + 默认动作）](#sec10-0)
+  - [10.1 `kill` / `raise` — 发送信号](#sec10-1)
+  - [10.2 `alarm` — 一次性定时器](#sec10-2)
+  - [10.3 `setitimer` — 周期/高精度定时器](#sec10-3)
+  - [10.4 `signal` — 简单信号捕捉](#sec10-4)
+  - [10.5 `sigaction` — 健壮信号捕捉](#sec10-5)
+  - [10.6 信号集函数（sigsetops）+ 屏蔽字/未决集](#sec10-6)
+  - [10.7 M3D6 后回填清单（勾掉本骨架的 ⏳）](#sec10-7)
+- [11. 线程（pthread）基础原语 ⭐ M3D8 新增](#sec11)
+  - [11.1 pthread_create（创建线程）](#sec11-1)
+  - [11.2 pthread_self（取自身 tid）](#sec11-2)
+  - [11.3 pthread_join（阻塞回收 + 取返回值）](#sec11-3)
+  - [11.4 pthread_exit（只退自己）](#sec11-4)
+  - [11.5 pthread_detach（分离线程）🧪 M3D9 亲验](#sec11-5)
+  - [11.6 M3D8 回填清单](#sec11-6)
+- [12. 线程同步（互斥锁 mutex）⭐ M3D9 新增](#sec12)
+  - [12.1 概念：竞态条件（race condition）与临界区](#sec12-1)
+  - [12.2 互斥锁类型与初始化/销毁](#sec12-2)
+  - [12.3 pthread_mutex_lock / unlock（核心）](#sec12-3)
+  - [12.4 M3D9 实测对照表：并发 × 锁 的 2×2 矩阵（本章精华）](#sec12-4)
+  - [12.5 锁粒度（性能与正确性的取舍）](#sec12-5)
+  - [12.6 M3D9 回填清单](#sec12-6)
+- [13. 线程同步续（trylock / 死锁 / 读写锁）⭐ M3D10 新增](#sec13)
+  - [13.1 pthread_mutex_trylock（非阻塞尝试加锁）🧪 M3D10 亲验](#sec13-1)
+  - [13.2 死锁（deadlock）🧪 M3D10 亲验](#sec13-2)
+  - [13.3 读写锁 `pthread_rwlock_t` 🧪 M3D10 亲验](#sec13-3)
+  - [13.4 M3D10 回填清单（同步续）](#sec13-4)
+- [14. 条件变量（condvar）⭐ M3D10 新增](#sec14)
+  - [14.1 API](#sec14-1)
+  - [14.2 三铁律（错一条就出 bug）](#sec14-2)
+  - [14.3 为什么 wait 要传 mutex](#sec14-3)
+  - [14.4 执行轨迹（单生产者+单消费者）🧪 M3D10 亲验](#sec14-4)
+  - [14.5 易错点](#sec14-5)
+  - [14.6 M3D10 回填清单（condvar）](#sec14-6)
+- [15. 信号量（semaphore）⭐ M3D11 新增](#sec15)
+  - [15.1 API](#sec15-1)
+  - [15.2 两种用法](#sec15-2)
+  - [15.3 三信号量生产者-消费者（环形缓冲）🧪 M3D11 亲验](#sec15-3)
+  - [15.4 信号量 vs 条件变量（同一道题两种写法）](#sec15-4)
+  - [15.5 M3D11 回填清单（semaphore）](#sec15-5)
+- [16. 线程同步选型决策树（M3 复习日 2026-10-31 新增）](#sec16)
+  - [16.1 选型决策树（自顶向下问）](#sec16-1)
+  - [16.2 四件套一句话定位](#sec16-2)
+  - [16.3 高频踩坑（复习日亲验复盘）](#sec16-3)
+  - [16.4 复习日实战](#sec16-4)
+- [17. 网络编程 socket 速查（M3D12 2026-11-03 新增）](#sec17)
+  - [17.1 头文件](#sec17-1)
+  - [17.2 网络字节序（必考）](#sec17-2)
+  - [17.3 地址结构体 `sockaddr_in`](#sec17-3)
+  - [17.4 TCP 服务端流程](#sec17-4)
+  - [17.5 TCP 客户端流程](#sec17-5)
+  - [17.6 高频踩坑（M3D12 亲验）](#sec17-6)
+
+---
+
+<a id="sec0"></a>
 ## 0. 概念速览（背诵级）
 
 | 概念 | 一句话 | 关键证据（本课程已实测） |
@@ -21,8 +107,10 @@
 
 ---
 
+<a id="sec1"></a>
 ## 1. 进程创建与退出
 
+<a id="sec1-1"></a>
 ### 1.1 `fork` — 创建子进程
 ```c
 #include <unistd.h>
@@ -42,6 +130,7 @@ pid_t fork(void);
   - 在子分支写 `int var=200;` 想“验证 COW”其实是**局部变量遮蔽全局**，证明不了 COW；要改的是全局 `var` + 打印 `&var`
   - 顺序写错（先判 `==0` 再判 `>0` 尚可，但漏判 `-1` 会漏掉失败分支）
 
+<a id="sec1-2"></a>
 ### 1.2 `getpid` / `getppid` — 取进程/父进程 ID
 ```c
 #include <sys/types.h>
@@ -54,6 +143,7 @@ pid_t getppid(void);  // 调用进程的父进程 pid
 - **注意点**：父的 `getppid` 是 shell（bash），子的 `getppid` 是父——验证父子关系靠这个
 - **易错点**：发信号时手敲 pid 易错；用程序自己 `printf("%d",getpid())` 抄，或 `pidof demo` / `pgrep demo` 查
 
+<a id="sec1-3"></a>
 ### 1.3 `exit` / `_exit` — 终止进程
 ```c
 #include <stdlib.h>
@@ -70,8 +160,10 @@ void _exit(int status);    // 直接进内核，不刷 stdio 缓冲区
 
 ---
 
+<a id="sec2"></a>
 ## 2. 进程回收
 
+<a id="sec2-1"></a>
 ### 2.1 `wait` — 阻塞回收任一子进程
 ```c
 #include <sys/types.h>
@@ -94,6 +186,7 @@ pid_t wait(int *status);
   - 想取退出码却传了 `NULL` → 取不到
   - 把“wait 返回 -1”和“子被信号杀”混淆：返回 -1 是**回收本身出错**，子被信号杀时 wait 仍成功返回 pid、用 `WIFSIGNALED/WTERMSIG` 判断
 
+<a id="sec2-2"></a>
 ### 2.2 `waitpid` — 精确/非阻塞回收
 ```c
 #include <sys/types.h>
@@ -113,6 +206,7 @@ pid_t waitpid(pid_t pid, int *status, int options);
   - **WNOHANG 返回 0 当 error 退出 → 漏收**；它只回答“问的那一瞬间”，要结果必须**循环里每轮重新调用**（`ret=waitpid(...)` 写在 `while(1)` 内第一行），否则“只问一次”会死循环刷屏
   - `pid` 传 `-1` 是“谁先死收谁”，多个子时要 `>0` 指定才精准
 
+<a id="sec2-3"></a>
 ### 2.3 回收宏（见 2.1 表格，实战用例）
 ```c
 int status;
@@ -123,8 +217,10 @@ if (WIFSIGNALED(status)) printf("被信号杀，信号=%d\n", WTERMSIG(status));
 
 ---
 
+<a id="sec3"></a>
 ## 3. 程序替换 exec 族
 
+<a id="sec3-1"></a>
 ### 3.1 `execl` / `execlp` — 替换进程映像
 ```c
 #include <unistd.h>
@@ -146,8 +242,10 @@ int execlp(const char *file, const char *arg, ... /*, (char *)NULL */);
 
 ---
 
+<a id="sec4"></a>
 ## 4. 匿名管道
 
+<a id="sec4-1"></a>
 ### 4.1 `pipe` — 创建匿名管道
 ```c
 #include <unistd.h>
@@ -165,6 +263,7 @@ int pipe(int fd[2]);
   - `read` 返回 **0 = 写端全关（EOF）**，不是错误（见第 7.2）
   - 管道**写满阻塞**；**无读端还写 → SIGPIPE 杀进程（退出码 141）**
 
+<a id="sec4-2"></a>
 ### 4.2 `dup2` — 复制/重定向文件描述符
 ```c
 #include <unistd.h>
@@ -177,8 +276,10 @@ int dup2(int oldfd, int newfd);
 
 ---
 
+<a id="sec5"></a>
 ## 5. 命名管道 FIFO
 
+<a id="sec5-1"></a>
 ### 5.1 `mkfifo` — 创建命名管道
 ```c
 #include <sys/types.h>
@@ -197,8 +298,10 @@ int mkfifo(const char *pathname, mode_t mode);
 
 ---
 
+<a id="sec6"></a>
 ## 6. 共享存储映射（mmap）
 
+<a id="sec6-1"></a>
 ### 6.1 `mmap` — 建立映射区
 ```c
 #include <sys/mman.h>
@@ -222,6 +325,7 @@ void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
   - 映射长度超出文件 → SIGBUS；offset 不对齐 → EINVAL
   - 验证用 `od -c`（看字节落在偏移 0 还是 100）+ `ls -l`（看大小），**`cat` 有字 ≠ 验证通过**
 
+<a id="sec6-2"></a>
 ### 6.2 `munmap` — 释放映射区
 ```c
 #include <sys/mman.h>
@@ -231,6 +335,7 @@ int munmap(void *addr, size_t length);
 - **返回值**：成功返回 **0**；失败返回 **-1**
 - **易错点**：addr 用错指针（如局部变量地址）会 munmap 失败或崩
 
+<a id="sec6-3"></a>
 ### 6.3 `ftruncate` — 撑大文件
 ```c
 #include <unistd.h>
@@ -243,8 +348,10 @@ int ftruncate(int fd, off_t length);
 
 ---
 
+<a id="sec7"></a>
 ## 7. 配套文件 IO（M2 内容，IPC 全程依赖）
 
+<a id="sec7-1"></a>
 ### 7.1 `open` / `close`
 ```c
 #include <fcntl.h>
@@ -257,6 +364,7 @@ int close(int fd);
 - **返回值**：open 成功返回**新的 fd（最小可用非负整数）**；失败返回 **-1**。close 成功 0 / 失败 -1
 - **易错点**：open 失败未检查 → 后续 read/write 拿到 -1 fd 静默失败
 
+<a id="sec7-2"></a>
 ### 7.2 `read`
 ```c
 #include <unistd.h>
@@ -269,6 +377,7 @@ ssize_t read(int fd, void *buf, size_t count);
   - 读完忘了 `buf[rn]='\0'` → `%s` 打印读到栈上垃圾（运气好才不串）
   - `rn` 是 ssize_t（有符号），数组下标注意无符号问题
 
+<a id="sec7-3"></a>
 ### 7.3 `write`
 ```c
 #include <unistd.h>
@@ -278,6 +387,7 @@ ssize_t write(int fd, const void *buf, size_t count);
 - **注意点**：和 mmap 的 memcpy 是两条路，别混用（见 6.1）
 - **易错点**：**不检查返回值** → EBADF/SIGPIPE 静默失败（写已关 fd 时尤其隐蔽）；写入长度用 `strlen`（内容长度）而非 `sizeof`（容器长度，会多写 `\0`）
 
+<a id="sec7-4"></a>
 ### 7.4 `lseek`
 ```c
 #include <unistd.h>
@@ -290,6 +400,7 @@ off_t lseek(int fd, off_t offset, int whence);
 
 ---
 
+<a id="sec8"></a>
 ## 8. 实战血泪易错点速记（M3 专属）
 
 | # | 现象 | 根因 | 防法 |
@@ -309,6 +420,7 @@ off_t lseek(int fd, off_t offset, int whence);
 
 ---
 
+<a id="sec9"></a>
 ## 9. 验证 / 调试工具箱
 
 | 工具 | 用途 | 典型命令 |
@@ -330,11 +442,13 @@ off_t lseek(int fd, off_t offset, int whence);
 
 ---
 
+<a id="sec10"></a>
 ## 10. 信号函数（IPC 第四件 · M3D6 进行中，骨架待补全）
 
 > **状态说明**：M3D5 上午已学概念/机制/三态（产生→未决→递达）/三处理方式（默认/忽略/捕捉）/四要素（编号+名称+事件+默认动作）；`kill -l` 见 62 个信号（无 32/33）。本节的 **kill/alarm/setitimer/信号集/sigaction** 属 M3D6 函数实战，**原型与已知要点先列准，⏳ 标注处待学完回填**。
 > **已确认硬知识**：`SIGKILL(9)` 与 `SIGSTOP(19)` **不可捕获、不可忽略**（M3D5 上午 `kill -9` 亲验）；其余信号可被捕捉/忽略。
 
+<a id="sec10-0"></a>
 ### 10.0 信号四要素速查表（编号 + 名称 + 事件 + 默认动作）
 
 > **四要素** = 编号 + 名称 + 产生事件（触发条件）+ 默认动作。默认动作缩写：**Term**=终止 / **Core**=终止并 core dump / **Stop**=暂停 / **Cont**=继续 / **Ign**=忽略。
@@ -358,6 +472,7 @@ off_t lseek(int fd, off_t offset, int whence);
 **补充（常用但不必背全）**：`SIGHUP(1)` 终端关闭 / 守护进程重读配置；`SIGABRT(6)` `abort()` 自杀（Core）；`SIGTSTP(20)` `Ctrl+Z` 暂停（**可捕获**，区别于不可捕的 SIGSTOP）。
 **查全量**：`kill -l`（共 62 个，**无 32/33**）；权威细节 `man 7 signal`。
 
+<a id="sec10-1"></a>
 ### 10.1 `kill` / `raise` — 发送信号
 ```c
 #include <sys/types.h>
@@ -381,6 +496,7 @@ int raise(int sig);                 // 等价于 kill(getpid(), sig)
   - 勿误杀：确认 `pid` 正确，别把父进程或自己 kill 了
   - 返回值别漏判 -1
 
+<a id="sec10-2"></a>
 ### 10.2 `alarm` — 一次性定时器
 ```c
 #include <unistd.h>
@@ -398,6 +514,7 @@ unsigned int alarm(unsigned int seconds);
   - ⚠️ **注册信号号写错**：`alarm()` 发的是 `SIGALRM`，若误写成 `signal(SIGUSR1, handler)`（alarm_demo.c 原版 bug），handler 永远不触发，到点后进程照常被 SIGALRM 默认动作杀死、终端打印 "Alarm clock" 而非"时间到"。**正确：`signal(SIGALRM, handler)`**（setitimer_demo.c 即正确版，亲验打印"第N次触发SIGALRM"）
   - "Alarm clock" 出现在屏幕而非重定向文件：这是 shell 对"子进程死于 SIGALRM"的提示，走终端不进 stdout，所以 `./alarm > out` 仍看到 Alarm clock、数字进 out
 
+<a id="sec10-3"></a>
 ### 10.3 `setitimer` — 周期/高精度定时器
 ```c
 #include <sys/time.h>
@@ -424,6 +541,7 @@ struct timeval { long tv_sec; long tv_usec; };   // 秒 + 微秒
   - 同样要捕获 `SIGALRM`：误注册成 SIGUSR1 则 handler 永不触发（与 alarm_demo bug 同源）
   - handler 里 `exit(0)` 是演示写法，真实程序慎用（直接结束进程、跳过清理）；更稳妥是置标志位让主循环处理
 
+<a id="sec10-4"></a>
 ### 10.4 `signal` — 简单信号捕捉
 ```c
 #include <signal.h>
@@ -443,6 +561,7 @@ sighandler_t signal(int signum, sighandler_t handler);
   - 编译警告 `unused parameter 'sig'`：handler 没用到 sig 参数时 `-Wextra` 会报；可在 handler 首行 `(void)sig;` 静音（kill_demo.c / alarm_demo.c 都有此警告；setitimer_demo.c 因用了 sig 而零警告）
   - **handler 内慎用非可重入函数**：`printf` 在教材 demo 常用，但严格说不是 async-signal-safe；正式代码用 `write(STDOUT_FILENO, ..., n)` 或只在 handler 里置 `volatile sig_atomic_t` 标志、主循环处理
 
+<a id="sec10-5"></a>
 ### 10.5 `sigaction` — 健壮信号捕捉
 ```c
 #include <signal.h>
@@ -468,6 +587,7 @@ struct sigaction {
   - **`sigaction` 比 `signal` 可靠**：`signal` 在部分系统 handler 执行后会自动复位为默认（第二次同信号走默认动作），`sigaction` 不会；sigact_demo 连按三次 Ctrl+C 都稳定进 handler 即证
   - handler 内慎用非可重入函数（`printf` 等）；正式代码用 `write(STDOUT_FILENO,...)` 或只在 handler 里置 `volatile sig_atomic_t` 标志、主循环处理
 
+<a id="sec10-6"></a>
 ### 10.6 信号集函数（sigsetops）+ 屏蔽字/未决集
 ```c
 #include <signal.h>
@@ -492,6 +612,7 @@ int sigpending(sigset_t *set);               // 取“阻塞且未决”的信�
   - pending 集用 `sigpending` 读，别和"屏蔽字"搞混：屏蔽字=我还不想收哪些；未决集=已经来了但我还没收的
   - 打印 pending 是排查"信号好像丢了"的利器——信号其实常在 pending 里等你解除屏蔽
 
+<a id="sec10-7"></a>
 ### 10.7 M3D6 后回填清单（勾掉本骨架的 ⏳）
 - [x] 10.0 四要素表：12 个核心信号已列（🧪 标出上午亲验 5 个）；待 `man 7 signal` 核对编号/事件/默认动作无偏差
 - [x] 10.1 kill：权限边界、pid 取值陷阱、`sig=0` 探测（上午 kill_demo 亲验：发 SIGUSR1 进 handler、SIGKILL 强杀不可捕、wait 回收）
@@ -516,10 +637,12 @@ int sigpending(sigset_t *set);               // 取“阻塞且未决”的信�
 
 ---
 
+<a id="sec11"></a>
 ## 11. 线程（pthread）基础原语 ⭐ M3D8 新增
 
 > **统一规则**：头文件 `<pthread.h>`；**编译必须 `-pthread`**（pthread 不在 libc，漏了报 `undefined reference to pthread_create`；用 `-pthread` 而非 `-lpthread`，前者还定义 `_REENTRANT` 让 libc 走可重入版本）；**pthread 系列函数成功返回 0、失败返回错误码且不设置 errno** —— 判 `ret != 0` 后用 `strerror(ret)` 打错，**不能用 perror**。
 
+<a id="sec11-1"></a>
 ### 11.1 pthread_create（创建线程）
 ```c
 #include <pthread.h>
@@ -537,6 +660,7 @@ int pthread_create(pthread_t *thread, const pthread_attr_t *attr,
   - 签名写错（`void fn()` / `int fn()`）→ 类型不兼容 `void*(*)(void*)`
   - 取参笔误：`int i = (int)i;`（本意取 arg 却自赋值，M3D8 真实踩坑 → 打印垃圾值 -1542590405）；应 `long i = (long)arg;`
 
+<a id="sec11-2"></a>
 ### 11.2 pthread_self（取自身 tid）
 ```c
 pthread_t pthread_self(void);
@@ -544,6 +668,7 @@ pthread_t pthread_self(void);
 - 🧪 **亲验要点**：`pthread_t` 在 NPTL 实现里本质是**线程描述符（struct pthread）的内存地址**；打印用 `%lu`（64 位 Linux 可行但非可移植，POSIX 只保证同进程内"可比"）
 - **易错点（重要）**：**pthread_t 值会被复用** ——「创建 → 立刻 join 回收 → 再创建下一个」串行模式下，前一线程描述符内存被释放，下一线程分配到**同一地址** → `pthread_self()` 打印值相同（pthread_join_more.c 亲验：5 线程 tid 全部相同，仅 main 不同）。想看 tid 各异：**先全部 create 再统一 join**。故 **pthread_t 不能当线程的永久身份证**（对比 pid 短期内不复用）
 
+<a id="sec11-3"></a>
 ### 11.3 pthread_join（阻塞回收 + 取返回值）
 ```c
 int pthread_join(pthread_t thread, void **retval);
@@ -559,6 +684,7 @@ int pthread_join(pthread_t thread, void **retval);
   - 对已 detach 线程 join → `EINVAL`（⏳ M3D9 detach_demo 亲验）
   - 多个线程对**同一 tid** join → 未定义行为；join 自己 → 死锁/EDEADLK
 
+<a id="sec11-4"></a>
 ### 11.4 pthread_exit（只退自己）
 ```c
 void pthread_exit(void *retval);
@@ -567,6 +693,7 @@ void pthread_exit(void *retval);
 - 🧪 **亲验要点**：pthread_join.c / join_more.c 主线程末尾 `pthread_exit(NULL)`，join 完自然退出、无残留 ✅
 - **易错点**：`exit()`（进程级，带走全部）vs `pthread_exit()`（线程级，只退自己）——线程函数内误写 `exit(1)` 会杀死全进程
 
+<a id="sec11-5"></a>
 ### 11.5 pthread_detach（分离线程）🧪 M3D9 亲验
 ```c
 #include <pthread.h>
@@ -581,6 +708,7 @@ int pthread_detach(pthread_t thread);
   - 分离线程结束由系统自动回收，没有"僵尸线程"概念（不像进程漏 wait 变 Z），但**也拿不到返回值**——想要返回值就必须 join（二者互斥）
   - 主线程若想"不等待但也不阻塞"，用 detach；想要线程的退出状态，用 join；不要两者都试
 
+<a id="sec11-6"></a>
 ### 11.6 M3D8 回填清单
 - [x] 11.1 pthread_create：`-pthread` 链接、签名 `void*fn(void*)`、传值、pid 相同 tid 不同（亲验）
 - [x] 11.2 pthread_self：pthread_t=描述符地址、串行 join 回收后地址复用 → 5 线程 tid 相同现象（亲验）
@@ -591,16 +719,19 @@ int pthread_detach(pthread_t thread);
 
 ---
 
+<a id="sec12"></a>
 ## 12. 线程同步（互斥锁 mutex）⭐ M3D9 新增
 
 > **统一规则**：头文件 `<pthread.h>`；编译必须 `-pthread`；**pthread 系列函数成功返回 0、失败返回错误码且不设置 errno** —— 判 `ret != 0` 后用 `strerror(ret)` 打错，**不能用 perror**。
 
+<a id="sec12-1"></a>
 ### 12.1 概念：竞态条件（race condition）与临界区
 - **竞态条件**：程序结果**依赖线程执行时序**，换个时序结果就变 → 结果不可复现、不可预测
 - **`cnt++` 不是原子操作**：编译后是 **load → add → store 三步**。两个线程都读到 100，各自加 1 都写回 101 → 两次自增只加了一次（**丢失更新 lost update**）
 - **临界区**：访问共享资源的那段代码；**同步的目标 = 保证同一时刻只有一个线程进入临界区**
 - 🧪 **亲验（race_demo.c）**：5 线程 × 10 万次无锁自增，理论 500000，实测 **208515**（且每次运行都不同）→ 竞态坐实
 
+<a id="sec12-2"></a>
 ### 12.2 互斥锁类型与初始化/销毁
 ```c
 #include <pthread.h>
@@ -618,6 +749,7 @@ int pthread_mutex_destroy(pthread_mutex_t *mutex);              // 销毁
   - 动态初始化的锁用完**必须 destroy**；且 destroy 前不能有线程还持有它
   - 锁**必须先初始化再使用**（未初始化的 `pthread_mutex_t` 内容是随机内存 → 锁行为未定义、可能死锁）
 
+<a id="sec12-3"></a>
 ### 12.3 pthread_mutex_lock / unlock（核心）
 ```c
 int pthread_mutex_lock(pthread_mutex_t *mutex);     // 加锁（阻塞）
@@ -629,6 +761,7 @@ int pthread_mutex_unlock(pthread_mutex_t *mutex);   // 解锁
 - **返回值必须查**：`pthread_mutex_lock` 失败时**不保证锁已被获取**（如 `EDEADLK`/`EOWNERDEAD`）→ 失败分支**不能**去 unlock，否则解锁一把没持有的锁
 - 🧪 **亲验（mutex_demo.c）**：lock/unlock 返回值全查、只锁 `cnt++` 一行 → 5 线程 × 10 万次 = **精确 500000**，零警告、连跑稳定
 
+<a id="sec12-4"></a>
 ### 12.4 M3D9 实测对照表：并发 × 锁 的 2×2 矩阵（本章精华）
 | 线程结构 | 无锁 | 有锁 |
 |---|---|---|
@@ -639,11 +772,13 @@ int pthread_mutex_unlock(pthread_mutex_t *mutex);   // 解锁
 - ⚠️ **面试高频陷阱**：只跑一次看到 500000 就以为没 bug，误判为"这个程序本来就是线程安全的"。**必须构造真并发**（create / join 拆成两个循环）才能暴露问题
 - 顺带解释 M3D8 现象：串行 create→join 时，pthread_t 描述符内存被复用 → 5 线程 tid 打印全相同；改成两段循环后线程真正并存，tid 各不相同
 
+<a id="sec12-5"></a>
 ### 12.5 锁粒度（性能与正确性的取舍）
 - **只锁必要的临界区**：本例只锁 `cnt++` 一行；不要把整个 `for` 循环、`printf` 一起锁进去
 - 锁的范围越大 → 阻塞其他线程越久 → **并发度越低、吞吐越低**（加锁后肉眼可见变慢，这是 futex 系统调用的开销）
 - 原则：**用性能换正确性**；正确性优先，粒度在保证原子性的前提下尽量小
 
+<a id="sec12-6"></a>
 ### 12.6 M3D9 回填清单
 - [x] 12.1 竞态条件：`cnt++` 三步非原子、丢失更新（race_demo.c 亲验 208515）
 - [x] 12.2 互斥锁初始化：动态 `init`/`destroy`（mutex_demo.c 亲验）；静态 `PTHREAD_MUTEX_INITIALIZER`
@@ -658,10 +793,12 @@ int pthread_mutex_unlock(pthread_mutex_t *mutex);   // 解锁
 
 ---
 
+<a id="sec13"></a>
 ## 13. 线程同步续（trylock / 死锁 / 读写锁）⭐ M3D10 新增
 
 > 统一规则见第 12 节开头：`<pthread.h>` + `-pthread` + 返回错误码用 `strerror(ret)` 打错。
 
+<a id="sec13-1"></a>
 ### 13.1 pthread_mutex_trylock（非阻塞尝试加锁）🧪 M3D10 亲验
 ```c
 int pthread_mutex_trylock(pthread_mutex_t *mutex);
@@ -671,6 +808,7 @@ int pthread_mutex_trylock(pthread_mutex_t *mutex);
 - **铁律**：**只有真正 trylock 成功的线程才能 unlock**；失败的线程绝不能 unlock（解锁没持有的锁 = 未定义行为）
 - 🧪 **亲验（trylock.c）**：main 先 `lock` 持锁 → 子线程 `trylock` 返回 `EBUSY(16)` 打印"锁被占用"；main `unlock` 后再次建子线程 `trylock` 成功 → 一次运行演示"失败+成功"两条路径
 
+<a id="sec13-2"></a>
 ### 13.2 死锁（deadlock）🧪 M3D10 亲验
 - **四要件（Coffman）**：① 互斥（资源独占）② 占有且等待（持一把等另一把）③ 不可剥夺（锁不能抢）④ **循环等待**（A 等 B、B 等 A）—— 四者同时成立才死锁
 - **两类常见场景**：
@@ -680,6 +818,7 @@ int pthread_mutex_trylock(pthread_mutex_t *mutex);
 - **解法②：trylock 回退重试法**：先 lock 第一把 → `trylock` 第二把；失败(`EBUSY`)则**先释放已持有的第一把**、sleep 后重试。🧪 亲验 `deadlock_trylock.c`（打印"get B fail, release lockA, retry"后下一轮成功）。⚠️ **缺点：有活锁(livelock)风险**（两线程同时回退又同时抢），且代码更复杂——一般不如定序法推荐
 - 🧪 **复现（deadlock.c）**：t1(A→B)、t2(B→A)，各 `sleep(1)` 确保都拿到第一把锁后再抢第二把 → 稳定卡死，提示符不返回；`kill -9` 退出
 
+<a id="sec13-3"></a>
 ### 13.3 读写锁 `pthread_rwlock_t` 🧪 M3D10 亲验
 ```c
 pthread_rwlock_t rw;
@@ -692,14 +831,17 @@ pthread_rwlock_destroy(&rw);
 - **语义**：**多读可并发、读写互斥、写写互斥**——适合"读多写少"场景（比纯 mutex 并发度高）
 - **易错点（血泪）**：`rdlock` 是**共享**的，多个读者**真正并发**执行临界区 → 若在临界区内并发修改某个全局计数（如 `readers_in++`），**该计数本身也会数据竞争**！必须用**另一把 mutex** 单独保护这个计数，且只在"自增/判断/自减"那一下加锁，**别把 sleep 罩进去**（否则读者被这把 mutex 串行化，失去 rwlock 意义）。🧪 亲验 `rwlock.c`：初版 `readers_in++` 裸写在 rdlock 区 → 输出乱序(1/3/2)；加 `cnt_mutex` 后严格 1→2→3，写者看到 0（正确）
 
+<a id="sec13-4"></a>
 ### 13.4 M3D10 回填清单（同步续）
 - [x] 13.1 trylock：EBUSY=16、成功才 unlock、两路径演示（trylock.c 亲验）
 - [x] 13.2 死锁：四要件 / 顺序相反场景 / 定序法 + trylock 回退两解法（deadlock.c / deadlock_fix.c / deadlock_trylock.c 亲验）
 - [x] 13.3 读写锁：rdlock 共享、wrlock 独占；rdlock 区内改全局变量仍需另配 mutex（rwlock.c 亲验）
 - [x] 信号量 `sem_*` → M3D11（见第 15 节）
 
+<a id="sec14"></a>
 ## 14. 条件变量（condvar）⭐ M3D10 新增
 
+<a id="sec14-1"></a>
 ### 14.1 API
 ```c
 pthread_cond_t cond = PTHREAD_COND_INITIALIZER;   // 也可 pthread_cond_init(&cond, NULL)
@@ -710,14 +852,17 @@ int pthread_cond_destroy(&cond);
 ```
 - **编译**：必须 `-pthread`；**返回错误码不设 errno**，用 `strerror(ret)` 打错
 
+<a id="sec14-2"></a>
 ### 14.2 三铁律（错一条就出 bug）
 1. **必须配 mutex**：条件变量本身不保护数据，被等待的"共享条件"（如 `ready`）必须由 mutex 保护
 2. **`while` 复查，不是 `if`**：`while(条件不满足) pthread_cond_wait(...)`。防**虚假唤醒**(spurious wakeup) 和"多消费者时别人抢先消费"；醒来后无条件再判一次
 3. **先改共享状态、再 signal**：生产者在 `ready=1` **之后**才 `pthread_cond_signal` —— 保证消费者被唤醒、`while` 复查时状态已为真，不会漏唤醒
 
+<a id="sec14-3"></a>
 ### 14.3 为什么 wait 要传 mutex
 `pthread_cond_wait` 内部**原子地释放 mutex 再阻塞**；被唤醒时**原子地重新获取 mutex**。若 wait 不释放锁，生产者永远拿不到 mutex → 死锁。所以调用顺序必须是 `lock → while(!cond) wait → 处理 → unlock`
 
+<a id="sec14-4"></a>
 ### 14.4 执行轨迹（单生产者+单消费者）🧪 M3D10 亲验
 ```
 消费者持锁 → ready==0 → 打印"需要等待" → cond_wait(释放锁,阻塞)
@@ -726,12 +871,14 @@ int pthread_cond_destroy(&cond);
 ```
 🧪 亲验（cond.c，零警告）：输出 `没有产品，消费者1需要等待,ready=0` → `生产者2产品就绪,发送signal信号,ready=1` → `产品就绪，消费者1可以消费,ready=1`，干净退出
 
+<a id="sec14-5"></a>
 ### 14.5 易错点
 - `if(cond) wait` 误用（应为 `while`）→ 虚假唤醒后带错误状态继续 → 数据错乱
 - 先 `signal` 再改状态 → 竞态窗口 → 漏唤醒
 - 忘记 `pthread_cond_wait` 要传 mutex → 编译不过或逻辑错
 - 多消费者场景用 `signal` 只醒一个够用；多线程混战才考虑 `broadcast`
 
+<a id="sec14-6"></a>
 ### 14.6 M3D10 回填清单（condvar）
 - [x] 14.1 API：init/wait/signal/broadcast/destroy（cond.c 亲验）
 - [x] 14.2 三铁律：配 mutex / while 复查 / 先改状态再 signal
@@ -741,8 +888,10 @@ int pthread_cond_destroy(&cond);
 
 ---
 
+<a id="sec15"></a>
 ## 15. 信号量（semaphore）⭐ M3D11 新增
 
+<a id="sec15-1"></a>
 ### 15.1 API
 ```c
 #include <semaphore.h>
@@ -756,10 +905,12 @@ int sem_getvalue(sem_t *sem, int *sval);  // 读当前值（仅诊断用，非�
 - **编译**：`-pthread`（信号量在 pthread 库里）
 - **错误处理与 pthread 相反**：`sem_*` 失败返回 **-1 且置 errno** → 用 `perror` 打；`pthread_*` 返回错误码（不设 errno）→ 用 `strerror(ret)`。混用时别套错（亲验：M3D11 的 sem 全用 `perror`，pthread 走 `err()` 辅助函数，区分正确）
 
+<a id="sec15-2"></a>
 ### 15.2 两种用法
 - **二值/阻塞唤醒（初值 0）**：`sem_wait` 先阻塞，等对方 `sem_post` 才继续 → 等价"一次性事件通知"。`sem_basic.c` 亲验：消费者先 `sem_wait` 卡住，生产者 `sleep(1)` 后 `sem_post`，消费者才打印"被唤醒"。
 - **计数信号量（初值 = N）**：限流 / 资源池。`sem_limit.c` 亲验：初值 3、起 5 个线程，一次只 3 个能进临界区，另 2 个阻塞等 `sem_post` 释放名额（输出"进入"恰好 3 行，离开一个补位一个）。退化为初值 1 即 ≈ 互斥锁（但信号量无"谁持有"概念，post 可由任意线程调，与 mutex 不同）。
 
+<a id="sec15-3"></a>
 ### 15.3 三信号量生产者-消费者（环形缓冲）🧪 M3D11 亲验
 ```c
 #define N 4
@@ -778,6 +929,7 @@ sem_post(&mutex);  sem_post(&empty);
 - **`in`/`out` 也要 mutex 保护**：多生产者/消费者时，信号量管不了这两个共享下标，得靠 mutex，否则缓冲读写错位；验证用不变量 `empty + full == N`（临界区内快照会因"一个格子在途"出现 N-1，属正常，非 bug）。
 - 🧪 亲验（`prod_cons_sem.c`，零警告）：FIFO 配对 `producer in=i item=k` → `consumer out=i item=k`；`in/out` 在 0–3 循环；缓冲填满 4 个再抽干，无死锁无竞态。
 
+<a id="sec15-4"></a>
 ### 15.4 信号量 vs 条件变量（同一道题两种写法）
 | | condvar | semaphore |
 |---|---|---|
@@ -786,6 +938,7 @@ sem_post(&mutex);  sem_post(&empty);
 | 多缓冲 PC | 较啰嗦（要自己数 filled 槽） | 三信号量直接建模，代码更短更不易错 |
 | 适用 | 一次性"事件通知"、配合 `while` 复查 | 限流、资源池、生产者消费者 |
 
+<a id="sec15-5"></a>
 ### 15.5 M3D11 回填清单（semaphore）
 - [x] 15.1 API：init/wait/post/destroy/getvalue（sem 用 perror，pthread 用 strerror 区分）
 - [x] 15.2 二值阻塞唤醒（sem_basic）+ 计数限流（sem_limit）
@@ -794,10 +947,12 @@ sem_post(&mutex);  sem_post(&empty);
 
 ---
 
+<a id="sec16"></a>
 ## 16. 线程同步选型决策树（M3 复习日 2026-10-31 新增）
 
 > 线程章四件套（mutex / rwlock / 信号量 / condvar）都学完了。核心不是"会调 API"，而是**拿到需求先选对原语**。下面是决策树。
 
+<a id="sec16-1"></a>
 ### 16.1 选型决策树（自顶向下问）
 1. **要不要限流 / 资源池（最多 N 个同时进）？**
    → 是：**计数信号量** `sem_init(&s,0,N)`。10 线程只放 3 个进 → 初值 3 直接搞定。
@@ -810,6 +965,7 @@ sem_post(&mutex);  sem_post(&empty);
 4. **需要"拿不到锁就立刻去做别的事"（非阻塞）？**
    → mutex 配 `pthread_mutex_trylock`：拿不到返回 `EBUSY`，不阻塞、**也不能 unlock**（没持有）。
 
+<a id="sec16-2"></a>
 ### 16.2 四件套一句话定位
 | 原语 | 一句话 | 自带计数？ | 典型场景 |
 |---|---|---|---|
@@ -818,6 +974,7 @@ sem_post(&mutex);  sem_post(&empty);
 | 信号量 | 计数 + 阻塞唤醒 | **是** | 限流、PC、资源池 |
 | condvar | 等"条件成立"被通知 | 否（要自己配状态变量） | 事件通知、`while` 复查 |
 
+<a id="sec16-3"></a>
 ### 16.3 高频踩坑（复习日亲验复盘）
 - ❌ 拿 condvar 当限流：它 `signal` **不计数**，批产要自己数 + 循环唤醒 → 用信号量更对。
 - ❌ 拿信号量当 mutex：信号量**无"持有者"概念**，`post` 任意线程可调，丢了所有权保护 → 护临界区用 `pthread_mutex_t`。
@@ -826,6 +983,78 @@ sem_post(&mutex);  sem_post(&empty);
 - ❌ MPSC 忘给 `in`/`out` 加 mutex：信号量管不了这两个共享下标，多 P/C 并发写必错位。
 - ✅ `empty + full == N` 不变量在临界区内快照可能出现 N-1/N+1（一个格子在途），属正常。
 
+<a id="sec16-4"></a>
 ### 16.4 复习日实战
 - 2026-10-31：15 题概念小测验全过（竞态四要件 / 死锁 Coffman / rwlock 读锁不互斥 / condvar 三铁律 / 信号量 vs condvar / 限流选型）。
 - 下午 capstone = 多生产者多消费者（MPSC）有界环形缓冲：3P / 2C / N=5。自写 `mpsc.c` 经 V1→V4 四轮 debug（修 in/out 不前进、VLA 崩溃、终止逻辑），最终干净退出。参考实现见 `practice/M3复习_MPSC/mpsc_ref.c`。
+
+---
+
+<a id="sec17"></a>
+## 17. 网络编程 socket 速查（M3D12 2026-11-03 新增）
+
+> 进入 M3 后半段：网络编程。先做**单连接阻塞 echo 服务器**，打通 socket 最小闭环，为简历项目 2（多线程 TCP 服务器）打地基。系统调用类错误用 `perror()`（置 errno）；pthread 类错误用 `strerror(ret)`（返回码）—— 别混。
+
+<a id="sec17-1"></a>
+### 17.1 头文件
+```c
+#include <sys/socket.h>   // socket/bind/listen/accept/connect/recv/send/close
+#include <netinet/in.h>   // sockaddr_in / htons / htonl / INADDR_ANY
+#include <arpa/inet.h>    // inet_pton / inet_ntop（规范头，建议显式加）
+#include <unistd.h>       // close
+#include <string.h>       // memset
+```
+
+<a id="sec17-2"></a>
+### 17.2 网络字节序（必考）
+- x86 主机**小端**，网络协议规定**大端**传输 → 端口号 / IP 字段必须转换。
+- 四宏：`htons`(16位端口) / `htonl`(32位IP) 主机→网络；`ntohs` / `ntohl` 网络→主机。
+- IP 文本↔二进制：用 `inet_pton(AF_INET,"127.0.0.1",&addr)` / `inet_ntop`，取代过时且不支持 IPv6 的 `inet_addr`。
+
+<a id="sec17-3"></a>
+### 17.3 地址结构体 `sockaddr_in`
+```c
+struct sockaddr_in addr;
+memset(&addr,0,sizeof(addr));
+addr.sin_family      = AF_INET;
+addr.sin_port        = htons(8888);              // ⚠ 必须 htons！
+addr.sin_addr.s_addr = inet_pton(AF_INET,"0.0.0.0",&addr.sin_addr); // 或 htonl(INADDR_ANY)
+// bind/accept 接口用通用指针，需强转：
+bind(fd,(struct sockaddr*)&addr,sizeof(addr));
+```
+> `sockaddr` 与 `sockaddr_in` 内存布局兼容，bind/connect/accept 用通用 `struct sockaddr*`，调用时 `(struct sockaddr*)&addr` 强转。
+
+<a id="sec17-4"></a>
+### 17.4 TCP 服务端流程
+```c
+int fd = socket(AF_INET, SOCK_STREAM, 0);   // 失败返回 -1
+bind(fd, (struct sockaddr*)&addr, sizeof(addr));
+listen(fd, 5);                              // backlog = 连接队列上限
+int connfd = accept(fd, (struct sockaddr*)&cli, &len);  // 阻塞等连接，返回【新 fd】
+// 循环收发：
+char buf[1024];
+ssize_t n = recv(connfd, buf, sizeof(buf)-1, 0);
+if (n > 0)  { buf[n]='\0'; /* 处理 */ send(connfd, buf, n, 0); }  // 真 echo：原样发回
+else if (n == 0) { /* 对端关闭，退出循环 */ }
+// else n<0 → 出错
+close(connfd); close(fd);
+```
+
+<a id="sec17-5"></a>
+### 17.5 TCP 客户端流程
+```c
+int fd = socket(AF_INET, SOCK_STREAM, 0);
+connect(fd, (struct sockaddr*)&addr, sizeof(addr));  // 阻塞直到连上
+send(fd, "hello", 5, 0);
+recv(fd, buf, sizeof(buf)-1, 0);
+close(fd);
+```
+
+<a id="sec17-6"></a>
+### 17.6 高频踩坑（M3D12 亲验）
+- ❌ **端口忘了 `htons`**：本地回环可能碰巧通、跨机必乱码（字节序考点）。
+- ❌ **把 socket 当"消息"用**：TCP 是**字节流**，`recv` 一次不一定收满你期望的长度 → 单连接 echo 用"收多少回多少"；"循环读满 N 字节"留到多连接章节。
+- ❌ **`recv` 返回 0 当错误处理**：`n==0` 是对端**正常关闭**，应 break 而非报错退出。
+- ❌ **服务器重启报 `Address already in use`**：上次的 socket 处于 TIME_WAIT。加 `int opt=1; setsockopt(fd,SOL_SOCKET,SO_REUSEADDR,&opt,sizeof(opt));`（bind 之前）。
+- ⚠️ **单连接服务器只能伺候一个客户端**：`accept` 一次后卡在它的 recv 循环里；要并发 → M3D13 每连接一线程（复用前半段 pthread）。
+- ✅ 错误打印：系统调用用 `perror(str)`（置 errno）；pthread 用 `strerror(ret)`（返回码）—— 两者不可互换（复习 Q11）。
