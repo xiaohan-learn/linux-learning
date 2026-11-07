@@ -89,6 +89,12 @@
   - [[#17.4 TCP 服务端流程]]
   - [[#17.5 TCP 客户端流程]]
   - [[#17.6 高频踩坑（M3D12 亲验）]]
+- [[#18. System V IPC（消息队列/共享内存/信号量）⭐ M3D16 新增]]
+  - [[#18.0 公共机制（key/ftok · IPC_CREAT · IPC_RMID 内核持久 · ipcs/ipcrm）]]
+  - [[#18.1 消息队列 msg（msgget/msgsnd/msgrcv/msgctl）]]
+  - [[#18.2 共享内存 shm（shmget/shmat/shmdt/shmctl）]]
+  - [[#18.3 信号量 sem（semget/semop/semctl · union semun 经典坑）]]
+  - [[#18.4 System V IPC vs 已学 IPC 对比表]]
 
 ---
 
@@ -1058,3 +1064,70 @@ close(fd);
 - ❌ **服务器重启报 `Address already in use`**：上次的 socket 处于 TIME_WAIT。加 `int opt=1; setsockopt(fd,SOL_SOCKET,SO_REUSEADDR,&opt,sizeof(opt));`（bind 之前）。
 - ⚠️ **单连接服务器只能伺候一个客户端**：`accept` 一次后卡在它的 recv 循环里；要并发 → M3D13 每连接一线程（复用前半段 pthread）。
 - ✅ 错误打印：系统调用用 `perror(str)`（置 errno）；pthread 用 `strerror(ret)`（返回码）—— 两者不可互换（复习 Q11）。
+
+<a id="sec18"></a>
+## 18. System V IPC（消息队列/共享内存/信号量）⭐ M3D16 新增
+
+> M3 进程/IPC 主线收尾。System V IPC 是独立于 POSIX IPC 的内核级 IPC 机制，面试常与 mmap / POSIX 信号量 / 管道对比。三件套：**消息队列 msg / 共享内存 shm / 信号量 sem**。
+
+### 18.0 公共机制（key/ftok · IPC_CREAT · IPC_RMID 内核持久 · ipcs/ipcrm）
+- **`key_t` + `ftok(path, proj_id)`**：System V IPC 用「key」标识内核对象，`ftok` 从一个**已存在的文件**生成 key（文件不存在 → `ENOENT`）；`proj_id` 只取低 8 位，常用单字符如 `'a'`。
+- **创建/打开统一套路**：`msgget/shmget/semget` 都吃 `key` 和 `flag`；flag 含 `IPC_CREAT | 0664`（权限位不能省，否则别的进程打不开）。`key=IPC_PRIVATE` 则总是新建私有对象。
+- **`xxxctl(..., IPC_RMID, ...)` 删除**：System V 对象**内核持久**——进程退出后仍在，不显式删会一直占内核资源 → 必须 `IPC_RMID` 清理。
+- **调试命令（必会）**：`ipcs` 看当前所有消息队列/共享内存/信号量（`ipcs -q/-m/-s` 分看）；`ipcrm -q/-m/-s <id>` 手动删。卡住先 `ipcs` 看是否有僵尸对象。
+
+### 18.1 消息队列 msg（msgget/msgsnd/msgrcv/msgctl）
+```c
+#include <sys/msg.h>
+int msgget(key_t key, int msgflg);                                    // 创建/打开
+int msgsnd(int msqid, const void *msgp, size_t msgsz, int msgflg);    // 发送
+ssize_t msgrcv(int msqid, void *msgp, size_t msgsz, long msgtyp, int msgflg); // 接收
+int msgctl(int msqid, int cmd, struct msqid_ds *buf);                 // 控制/删除
+struct msgbuf { long mtype; char mtext[128]; };   // 首字段必须是 long mtype
+```
+- **`msgtyp` 是接收核心特性**：`>0` 取类型等于它的第一条；`0` 取任意第一条；`<0` 取类型 ≤ |msgtyp| 中最小的（带类型、可随机读，是消息队列比管道强的地方）。
+- **`msgsz` 只算 `mtext` 数据长度，不含 `mtype`**；推荐发送用 `strlen(mtext)+1`（含 `\0`）。
+- ⚠️ **亲验踩坑（M3D16）**：发送若写成 `sizeof(mtext)+1` 会把栈上未初始化垃圾一起发出（长度=数组大小）；若接收端 `msgsz` 用 `sizeof(mtext)` 会**小于**发送长度 → `msgrcv` 报 `E2BIG`（Argument list too long）。**发送用 `strlen+1`、接收用 `sizeof(mtext)` 即可避免**。
+- 收尾 `msgctl(msqid, IPC_RMID, NULL)`；fork 程序中**只让父进程在 `wait` 子之后删一次**（别父子都删）。
+
+### 18.2 共享内存 shm（shmget/shmat/shmdt/shmctl）
+```c
+#include <sys/shm.h>
+int shmget(key_t key, size_t size, int shmflg);   // 创建/打开（size 按页，如 4096）
+void *shmat(int shmid, const void *shmaddr, int shmflg);  // 映射到进程地址空间
+int shmdt(const void *shmaddr);                   // 解除映射（detach）
+int shmctl(int shmid, int cmd, struct shmid_ds *buf);     // 控制/删除
+```
+- `shmat` 失败返回 `(void*)-1`（**不是 NULL**），判等用 `if(p==(void*)-1)`。
+- `shmdt` 只是本进程解除；**真正释放要 `shmctl(...,IPC_RMID,...)` 且所有进程都 detach 后才回收**。
+- ⚠️ **共享内存没有内建同步**：能跨进程看到同一块内存，但"谁先写谁先读"完全靠你自己（如 `sleep` 是假同步）。**真实互斥/有序必须用信号量**（见 18.3 / P3）。与 mmap 对比：shm 纯内核内存不落文件、靠 key、内核持久需 IPC_RMID；mmap 映射文件后端、关 fd+munmap 即释放。
+- 收尾同样**只一方 `IPC_RMID`**（父 `wait` 子后删），双删会 `EINVAL`。
+
+### 18.3 信号量 sem（semget/semop/semctl · union semun 经典坑）
+```c
+#include <sys/sem.h>
+int semget(key_t key, int nsems, int semflg);     // 创建/打开（nsems=集合里信号量个数）
+int semop(int semid, struct sembuf *sops, size_t nsops);   // P/V 操作
+int semctl(int semid, int semnum, int cmd, ...);  // 初始化/删除/取值
+struct sembuf { unsigned short sem_num; short sem_op; short sem_flg; };
+// sem_op:  >0 = V 释放(加);  <0 = P 申请(减,不足则阻塞);  0 = 等待变 0
+```
+- ⚠️ **经典坑（M3D16 必记）**：glibc **不声明 `union semun`**，初始化 `semctl(semid,0,SETVAL,...)` 前必须自己定义，否则编译报"union semun 未声明"：
+  ```c
+  union semun { int val; struct semid_ds *buf; unsigned short *array; };
+  union semun su; su.val = 1; semctl(semid, 0, SETVAL, su);
+  ```
+- System V 信号量是「**信号量集合**」(`nsems` 个)，用 `sem_num` 指定操作第几个；POSIX `sem_t`（M3D11）是单个。初始化只能 `semctl SETVAL`，没有 `sem_init` 一行初始化——这是与 POSIX 信号量最直观的区别。
+- **`SEM_UNDO` 好实践**：`sem_flg` 置 `SEM_UNDO`，进程异常退出时内核自动撤销其 P，避免死锁。
+- 收尾 `semctl(semid, 0, IPC_RMID)`（同样只一方删）。
+
+### 18.4 System V IPC vs 已学 IPC 对比表
+| 维度 | 消息队列 msg | 共享内存 shm | System V 信号量 sem | 对照（已学） |
+|------|------------|------------|-------------------|------------|
+| 用途 | 传数据（带类型） | 传数据（最快） | 同步/互斥（不传数据） | 管道/mmap 传数据；POSIX 信号量同步 |
+| 标识 | key / msqid | key / shmid | key / semid | mmap 用 fd；POSIX 信号量用名字/匿名 |
+| 同步能力 | msgrcv 阻塞自带同步 | **无**内建同步 | P/V 阻塞自带同步 | 管道读阻塞；mmap 无 |
+| 生命周期 | 内核持久，需 IPC_RMID | 内核持久，需 IPC_RMID | 内核持久，需 IPC_RMID | 管道随进程；mmap 关 fd 释放 |
+| 关键坑 | msgsz 与 E2BIG | shmat 返回 -1 非 NULL | union semun 不声明 | — |
+
+> **一句话收尾**：System V 三件套都「内核持久」，用完务必 `IPC_RMID` 清理并用 `ipcs` 验证为空；需要跨进程有序/互斥时，shm 配 sem 是经典组合。
