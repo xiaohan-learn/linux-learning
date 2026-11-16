@@ -19,9 +19,10 @@
 | v1 | 阻塞单连接（回声） | 0（一次只服务 1 个客户端） | 跑通 socket 全套流程 | 串行，第二个客户端得等第一个断开 |
 | v2 | 多线程（每连接一线程 · 聊天室） | 高（每连接独立线程） | 连接真正并发 | 连接数=线程数，C10K 时线程爆炸、上下文切换开销大 |
 | v3 | 线程池（预创建 worker + 任务队列） | 高（可控线程数） | 避免"每连接建线程"的开销与失控 | worker 拿到 fd 后**阻塞 recv** 仍占住线程，4 个 worker 同时只能服务 4 个"正在 recv"的连接 |
-| v4 | epoll + 线程池（IO 多路复用） | 很高（单线程管上万 fd） | 把 **IO 等待与业务处理解耦** | 已是标准高并发骨架（再往后才是 reactor/proactor、用户态协程等） |
+| v4 | epoll + 线程池（LT，IO 多路复用） | 很高（单线程管上万 fd） | 把 **IO 等待与业务处理解耦** | LT 事件次数偏多；慢客户端 `send` 遇 EAGAIN 会被误杀 |
+| v4+ | 进阶：ET 边沿触发 + EPOLLOUT 写事件 | 很高（事件次数更少、写不阻塞） | ET 降事件次数；EPOLLOUT 让慢客户端不再被误杀 | 用户态写缓冲有上限（背压设计）；仍是行式回声，无应用层协议 |
 
-**一句话总结演进**：v1 一次只能服务一个客户端 → v2 用多线程让连接并发 → v3 用线程池避免"每连接建线程"的开销与失控 → v4 用 epoll 把 IO 等待交给内核，线程池只做处理，**少量固定线程扛海量连接**。
+**一句话总结演进**：v1 一次只能服务一个客户端 → v2 用多线程让连接并发 → v3 用线程池避免"每连接建线程"的开销与失控 → v4 用 epoll 把 IO 等待交给内核，线程池只做处理，**少量固定线程扛海量连接** → v4+ 换 ET 减少事件次数、加 EPOLLOUT 让慢客户端"发了不读"也不被误杀。
 
 ---
 
@@ -76,7 +77,7 @@
 
 ---
 
-### v4 · epoll + 线程池（项目终极形态）
+### v4 · epoll + 线程池（LT 基础版）
 
 **口述模板**：
 > "v3 还有个短板：worker 拿到 fd 后是用**阻塞 `recv`** 卡在 IO 上的，4 个 worker 同时只能服务 4 个'正在 recv'的连接，第 5 个连上来也得等。v4 把 IO 等待从线程里抽出来，交给 **epoll**：主线程跑一个 epoll 事件循环，一处盯所有 fd（监听 fd + 全部客户端 fd），**只在某个 fd 真正'可读'时才把 fd 丢给线程池**；worker 拿到 fd 后专心'读+回声'。这样** IO 等待与业务处理解耦**，少量线程就能扛海量连接。"
@@ -95,7 +96,77 @@
 - **`EPOLLONESHOT` 为什么需要？**
   > 没有它，一个 fd 的可读事件可能被多次上报、被多个 worker 同时拿到，导致两个线程抢同一 fd、数据乱序/重复读。ONESHOT 保证**同一时刻只有一个 worker 在动这个 fd**，处理完再手动重新打开通知。这是 epoll+线程池避免竞态的标准答案。
 - **LT vs ET 在本项目怎么选？**
-  > 我 v4 用的是 **LT + ONESHOT**，简单稳妥——LT 下没读干净下次还会通知，不容易丢事件。若追求极致性能可换 ET，但 ET 必须配**非阻塞 fd + 循环读到 EAGAIN**，否则会丢数据、坑更多。我之前单独写过 LT/ET 两个 demo 对比过（见 `practice/M3D19_epoll/`）。
+  > v4 基础版用的是 **LT + ONESHOT**，简单稳妥——LT 下没读干净下次还会通知，不容易丢事件。后来我在进阶版（v4+）里换成了 ET，这部分见下一节。LT/ET 两个纯 demo 我也对比过（见 `practice/M3D19_epoll/`）。
+
+---
+
+### v4+ · 进阶版：ET 边沿触发 + EPOLLOUT 写事件（代码 `v4_et_epollout.c`）
+
+> 这是我在 v4 稳定后主动做的两项生产级改造，也是面试最能体现"我理解 epoll 底层"的部分：**① 客户端 fd 从 LT 换成 ET；② 引入 EPOLLOUT，解决慢客户端被误杀。**
+
+**口述模板**：
+> "基础版 v4 有两个隐藏问题。第一，LT 下只要缓冲区有数据就一直通知，海量活跃连接时 epoll 事件次数偏多。第二，也是更要命的——worker 里 `send` 遇到对端读得慢、内核发送缓冲满时会返回 `EAGAIN`，基础版这时直接 `DEL+close`，等于**因为客户端读得慢就把它踢了**，数据没发完连接就断了。
+> 所以我做了进阶版：读这边换成 **ET（边沿触发）**，只在'不可读→可读'边沿通知一次，事件次数更少；写这边引入 **EPOLLOUT 状态机**——`send` 遇 EAGAIN 不关连接，而是把剩余数据拷进**每连接写缓冲**，注册 EPOLLOUT，等内核发送缓冲可写了再续发。这样慢客户端不再被误杀，worker 也不会卡在 send 上。"
+
+**核心机制（逐点讲，配合代码）**：
+
+1. **ET 命脉：非阻塞 fd + 循环 I/O 到 EAGAIN**。读：worker 里 `while(1) recv`，只在 `EAGAIN`（读干净）时退出、`EINTR` 时重试；写：`flush_out` 里循环 `send` 到 EAGAIN。少了任何一条都会丢数据 / 卡死。
+2. **每连接写缓冲**：
+   ```c
+   #define OUTBUF_MAX 8192
+   typedef struct { char buf[OUTBUF_MAX]; int len; int sent; int used; } outbuf_t;
+   outbuf_t g_outbuf[65536];   // fd 作下标（demo 够用）
+   ```
+   - `used`：是否有 pending 数据；`len`：待发总长；`sent`：已发偏移（下次从 `buf+sent` 续发）。
+3. **三个返回值约定**（自己设计、面试可讲）：`try_send` / `flush_out` 统一返回 **0=发完 / 1=出错关闭 / 2=挂起等可写**，worker 据此决定"继续读 / DEL+close / 回池等 EPOLLOUT"。
+4. **EPOLLOUT 状态机**：
+   - `send` 遇 EAGAIN → 剩余字节拷入 `g_outbuf[fd]`，`used=1` → `epoll_rearm(fd, 1)` 重新 ARM 时带上 `EPOLLOUT`；
+   - EPOLLOUT 事件到达 → worker 开头先 `flush_out(fd)` 续发；
+   - 发完 → `memset(ob,0)` 清空 `used=0`，重新 ARM **不再带 EPOLLOUT**（否则一直通知可写、忙等）；
+   - 关键：**worker 末尾 `epoll_rearm(fd, g_outbuf[fd].used)`**——是否带 EPOLLOUT 取决于还有没有 pending 写。
+5. **ONESHOT + 双事件**：一次事件可能同时带 `EPOLLIN|EPOLLOUT`，worker 要先 flush 写缓冲、再处理读；重新 ARM 时按 pending 状态决定事件组合。
+6. **SIGINT 优雅退出**：main 循环 `while(!stop)` + `epoll_wait` 返回 -1 时若 `stop` 则 break，避免被信号打断后主循环空转。
+
+**面试追问 & 标准答**：
+- **EPOLLOUT 为什么不一开始就注册、要等 EAGAIN 才挂？**
+  > socket 绝大多数时间都是可写的，一开始就注册 EPOLLOUT 会导致**几乎每次 epoll_wait 都立刻返回**，事件循环忙等、CPU 打满。所以只在 `send` 真的撞上 EAGAIN（缓冲满）时才注册，发完立刻注销——这是"按需注册写事件"的原则。
+- **ET 下 EPOLLOUT 续发要注意什么？**
+  > ET 的 EPOLLOUT 也是边沿触发，只在"不可写→可写"通知一次，所以续发也必须**循环 send 到 EAGAIN**，不能只发一次就走。
+- **`g_outbuf` 用 8192 固定数组、fd 作下标，生产环境有什么问题？怎么改？**
+  > demo 图省事。问题：① fd 可能超过 65535（可改动态 map / 用 event.data.ptr 挂指针）；② 固定 8192 写满会强制关闭慢客户端——这其实是**背压（backpressure）**策略，生产应配超时 + 限流；③ 每连接静态占 8KB，百万连接浪费，应按需分配。面试点出"背压是有意设计的保护，不是 bug"很加分。
+- **`try_send` 里 EAGAIN 时若已有 pending 数据，为什么要"追加"而不是覆盖？**
+  > 同一批次里可能多次 send 都 EAGAIN，前一次挂的字节还没发完，后一次必须 `memcpy` 到 `buf+len` 尾部追加，否则会覆盖丢数据。追加前要检查 `len+rem <= OUTBUF_MAX`。
+
+**验证实录（怎么证明 EPOLLOUT 真的生效，面试讲出来很加分）**：
+
+> 光看代码不算，我用三个终端做了对照实验，serv 端跑 `v4_et_epollout.c`：
+> 1. **正常客户端**：`nc` 连上发 `hello 001`，回声正常 → 证明基础功能没被改坏。
+> 2. **慢客户端**：用 python 把 `SO_RCVBUF` 调小到 512，发 6000 字节后**故意 sleep 4 秒完全不读**，醒后再读。结果 `got back 6000 bytes; equal= True`——**数据一个字节不差地回来了**。
+>    - 关键点：那 4 秒里服务端 send 必然撞 EAGAIN，旧版会直接 close，新版把数据挂进写缓冲、等客户端读了再续发。`equal=True` 就是"慢客户端没被误杀 + 数据完整"的铁证。
+>    - 同时服务端**不会打印"客户端X退出"**（那个退出日志是客户端读完主动关闭 socket、`recv` 返回 0 时的正常挥手，不是被 kill）。
+> 3. **背压对照**（进阶）：把 msg 提到 200000 字节，挂起量超过 `OUTBUF_MAX=8192` → 服务端会真的 close。这说明上限是**有意的背压保护**，避免无限缓冲撑爆内存——能讲清这一点，说明你不是只会调 API。
+>
+> 复现命令（记录在此，便于重跑）：
+> ```bash
+> # 终端1：服务端
+> cd ~/linux-practice/TCP_SERVER && ./v4_et
+> # 终端2：正常客户端
+> (echo hello 001; sleep 3) | nc 127.0.0.1 8888
+> # 终端3：慢客户端（SO_RCVBUF 调小逼出 EAGAIN）
+> python3 -c "
+> import socket, time
+> s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 512)
+> s.connect(('127.0.0.1', 8888))
+> msg = b'a' * 6000; s.sendall(msg)
+> print('sent', len(msg)); time.sleep(4)   # 4 秒不读，逼服务端 send EAGAIN
+> buf = b''
+> while len(buf) < len(msg):
+>     c = s.recv(1024)
+>     if not c: break
+>     buf += c
+> print('got back', len(buf), 'equal=', len(buf) == len(msg))
+> "
+> ```
 
 ---
 
@@ -123,8 +194,13 @@
 | 5 | 持锁做 IO | 并发退化成串行，线程池失效 | 把 `recv/send` 包进 `mutex` | 锁只包"取/放任务" |
 | 6 | 队列满时 fd 成孤儿 | fd 已 `EPOLL_CTL_ADD` 但任务没入队，再也不被处理 | enqueue 失败没兜底清理 | enqueue 失败（malloc 失败 / 队列满）时 `EPOLL_CTL_DEL` + `close` 兜底 |
 | 7 | ET 模式事件循环用 `break` 退出 for | 同一次 `epoll_wait` 返回的多个就绪 fd 被丢弃，个别客户端数据卡死 | `break` 退出了"处理就绪事件"的 for 循环，不是只读循环 | ET 下处理完一个 fd 用 `continue` 处理下一个，绝不 `break` |
+| 8 | `flush_out` 里写成 `if(errno=EAGAIN)` | 真错误永不处理、连接泄漏（赋值恒真） | 把比较 `==` 写成赋值 `=`，`errno` 被改成 EAGAIN 值，恒为真 | 用 `errno == EAGAIN`（可写成 `EAGAIN == errno` 防手滑，常量在左写错会编译报错） |
+| 9 | worker 末尾硬编码 `epoll_rearm(fd, 0)` | 挂起的写缓冲永远等不到 EPOLLOUT，慢客户端数据"沉底" | 重挂时抹掉了 EPOLLOUT 标志 | 按 pending 状态重挂：`epoll_rearm(fd, g_outbuf[fd].used)` |
+| 10 | `try_send` 里写 `if(ob->buf)` 判空 | 永远不进"首次挂起"初始化分支，`used` 始终 0，数据丢失 | 数组名 `ob->buf` 退化为指针、恒为真，应判状态位 | 判断标志位 `if(ob->used)`，别拿数组/指针当布尔用 |
+| 11 | EPOLLOUT 版 recv 循环 `while(1)` 无退出 | worker 100% CPU 空转（recv 返回 EAGAIN 后死循环） | 非阻塞 fd 读干净后 recv 返回 -1/EAGAIN，没退出条件 | `EINTR→continue`、`EAGAIN→break`；`try_send` 返回 2（挂起）时 `continue` 先把同批数据读净 |
 
 > 记忆口诀：**ONESHOT 必重挂，worker 别退场；send 出错要 DEL+close，EINTR 重试别慌；锁只包队列，IO 往外放。**
+> ET+EPOLLOUT 追加口诀：**比较别写成赋值（== 不是 =），重挂带上 pending 位；数组名恒真别当标志，EAGAIN 一定要 break。**
 
 ---
 
@@ -140,6 +216,8 @@
 8. select/poll/epoll 三者，从 fd 上限、内核拷贝、取就绪复杂度三个维度对比。
 9. 为什么服务器要忽略 `SIGPIPE`、区分 `EINTR`？
 10. 你的 v4 能扛多少并发？瓶颈会在哪？（提示：线程池大小、单连接业务是否耗时、是否用了边缘触发等）
+11. EPOLLOUT 为什么不一开始就注册，要等 EAGAIN 才挂？写缓冲写满了怎么办？（背压）
+12. 你怎么证明 EPOLLOUT 真的生效了？说出你的实验设计和判定标准。
 
 ---
 
@@ -187,15 +265,29 @@
 10. **v4 能扛多少并发？瓶颈在哪**
     - 连接数：上万级没问题（epoll 一个线程监视海量 fd，连接等待不占线程）。
     - 但"能同时处理的业务请求数"≈ **线程池大小**（应**对齐 CPU 核数**，如 8），瓶颈不在连接数而在"同时做业务的请求数"。
-    - 真实瓶颈点：① 线程池大小/CPU 核数（单业务耗时会占 worker、队列积压）；② **慢客户端 `send` 占 worker**（应改 `EPOLLOUT` 等可写再发）；③ 目前 LT，海量活跃连接事件次数偏多，极致吞吐可评估 ET；④ 无连接超时/心跳/应用层协议（仅行式回声）。
-    - 收尾：v4 已扛"海量连接+适度并发"，继续优化方向即上述几点。
+    - 真实瓶颈点：① 线程池大小/CPU 核数（单业务耗时会占 worker、队列积压）；② 慢客户端 `send` 占 worker（**我已在 v4+ 用 EPOLLOUT 写缓冲解决**）；③ 事件次数——已用 ET 减少；④ 无连接超时/心跳/应用层协议（仅行式回声）。
+    - 收尾：v4 已扛"海量连接+适度并发"，v4+ 进一步解决慢客户端与事件次数；剩余是超时/心跳/协议层。
+
+11. **EPOLLOUT 为什么不一开始就注册？写缓冲写满怎么办**
+    - 不早注册：socket 绝大多数时间可写，一注册就几乎每次 `epoll_wait` 都立即返回 → **忙等、CPU 打满**。原则是"按需注册"——只在 `send` 撞 EAGAIN（缓冲满）时才挂 EPOLLOUT，发完立即注销。
+    - 写满：本 demo 用固定 8192 写缓冲，写满就 `DEL+close`——这是**背压（backpressure）**，防止无限缓冲撑爆内存，是有意的保护而非 bug。生产做法：配发送超时 + 限流、按需动态分配缓冲、fd 超过 65535 时改动态映射。
+    - 补一句：ET 下 EPOLLOUT 续发也必须循环 `send` 到 EAGAIN，因为边沿只通知一次。
+
+12. **怎么证明 EPOLLOUT 生效（实验设计 + 判定）**
+    - 三个终端：服务端 + 正常 `nc` 客户端 + 慢客户端。
+    - 慢客户端：python 把 `SO_RCVBUF` 调小到 512，发 6000 字节后 sleep 4 秒完全不读，醒来再收。
+    - 判定：收到 `got back 6000 bytes; equal= True` → 那 4 秒里服务端 send 必撞 EAGAIN，旧版会 close、数据丢失，新版挂写缓冲等可写再续发，数据完整回收 = 慢客户端没被误杀。同时正常客户端回声不受影响 = 慢连接没拖垮全局。
+    - 加深：把 msg 提到 200000（超 `OUTBUF_MAX`）会触发背压 close，正好印证上限是保护设计。
 
 ---
 
 ## 6. 收尾话术（面试官追问"你这个项目有什么不足 / 还能怎么优化"时）
 
-> "目前 v4 是 LT + 阻塞式业务处理的经典 reactor 模型，已经能扛高并发连接。如果要继续优化，我会考虑几个方向：一是把 worker 里的业务处理也异步化、或按 CPU 核数对齐线程数避免上下文切换；二是如果要更极致吞吐，可以评估 ET 模式减少 epoll 事件次数；三是真正的生产服务器还会加：连接超时回收、心跳保活、协议层分包（目前是行式回声，没有应用层协议）、以及用 `EPOLLOUT` 改造解决 `send` 阻塞。这些是我下一步的演进思路。"
+> "目前项目做到 v4+：基础版 v4 是 LT + 线程池的经典 reactor 模型，已经能扛高并发连接；进阶版我又换成了 ET 减少事件次数，并用 EPOLLOUT 写缓冲解决了慢客户端被误杀的问题——这部分我用三终端对照实验验证过，慢客户端 6000 字节 `equal=True` 完整回收。
+> 如果要继续优化，我会考虑几个方向：一是连接超时回收、心跳保活；二是加协议层分包（目前是行式回声，没有应用层协议）；三是把写缓冲从固定 8192 改成按需动态分配 + 背压限流，fd 规模大了改用 `event.data.ptr` 挂指针；四是按 CPU 核数对齐线程数、业务处理异步化。这些是我下一步的演进思路。"
 
 ---
 
-*本讲稿配套代码见 `linux-tcp-server` 仓库（v1/v2/v3/v4 全部可编译运行），LT/ET 对比 demo 见 `linux_notes/practice/M3D19_epoll/`，多路复用速查见 `linux_notes/速查-网络编程.md`。*
+*本讲稿配套代码见 `linux-tcp-server` 仓库：v1/v2/v3/v4 全部可编译运行，`v4_epoll_thread_pool.c` 是 LT 基础版、`v4_et_epollout.c` 是 ET+EPOLLOUT 进阶版（均已在双端提交）。LT/ET 纯对比 demo 见 `linux_notes/practice/M3D19_epoll/`，多路复用速查见 `linux_notes/速查-网络编程.md`。*
+
+*最后更新：2026-11-16（M3D23）——补入 v4+ ET+EPOLLOUT 章节、4 个新踩坑（#8~#11）、EPOLLOUT 三终端验证实录、自测题 11/12。*
