@@ -84,3 +84,39 @@ int write_jpeg(const char *path, const uint8_t *rgb,
     fclose(fp);
     return 0;
 }
+
+/* =====================================================================
+ * 假帧源: 8 色彩条 (FULL-RANGE 值, 与 yuyv_to_rgb 的 FULL-RANGE 公式匹配)
+ *        + 顶行一块 32px 白块随帧号右移, 肉眼可辨 cap_00..cap_04 不同
+ * =================================================================== */
+#if FAKE_CAPTURE
+void gen_test_frame(uint8_t *yuyv, int w, int h, int frame_no){
+    /* SMPTE 彩条近似值 (FULL-RANGE: Y 0~255) ,白、黄、青、绿、品红、红、蓝、黑*/
+    static const uint8_t bars_y[8] = {235, 210, 170, 145, 106,  81,  41,  16};
+    static const uint8_t bars_u[8] = {128,  16, 166,  54, 202,  90, 240, 128};
+    static const uint8_t bars_v[8] = {128, 146,  16,  34, 222, 240, 118, 128};
+
+    int bar_w = w / 8;          /*一根彩条的像素宽度*/
+    if(bar_w < 2) bar_w = 2;    /*强制设为 2，防止bar_w=0导致除零或者画不出彩条*/
+
+    /*tag_x0：方块左边界；tag_x1：方块右边界，方块宽度固定 32 像素*/
+    int tag_x0 = (frame_no * 32) % w;
+    int tag_x1 = tag_x0 + 32;
+
+    uint8_t *p = yuyv;
+    for(int y = 0; y < h; y++){             /*遍历每一行（y 是行号，从 0 到 h-1）*/
+        for(int x = 0; x < w; x += 2){      /*横向遍历像素，一次步进 2 个像素*/
+            int bar = x / bar_w;            /*根据当前像素 x 的位置，算出现在落在第几根彩条上（0~7）*/
+            if(bar > 7) bar = 7;
+
+            uint8_t Y = bars_y[bar], U = bars_u[bar], V = bars_v[bar];  /*先拿当前位置对应的彩条颜色*/
+
+            if(y < 16 && x >= tag_x0 && x < tag_x1){   /* 帧号白块,如果落在标记区域，直接覆盖 YUV！*/
+                Y = 235; U = 128; V = 128;             /* 用 235 而非 255, 与彩条同步 */
+            }
+            p[0] = Y; p[1] = U; p[2] = Y; p[3] = V;
+            p += 4;
+        }
+    }
+}
+#endif

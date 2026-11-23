@@ -9,6 +9,10 @@
 #include <linux/videodev2.h>
 #include "image_proc.h"  
 
+/*1=本机假帧，0=板子真采集*/
+#ifndef FAKE_CAPTURE
+#define FAKE_CAPTURE 1          
+#endif         
 #define DEV_NODE "/dev/video0"  /*设备节点，上板换节点只改这里*/
 #define WIDTH 640               /*请求宽*/
 #define HEIGHT 480              /*请求高*/
@@ -17,16 +21,73 @@
 #define PIXEL_FORMAT V4L2_PIX_FMT_YUYV
 #define CAPTURE_FRAMES 5        /*抓 5 帧退出*/
 
+#if FAKE_CAPTURE
+static uint8_t *g_fake_yuyv=NULL;   /* 假帧缓冲，Step 4 初始化时 malloc,存放自己生成的 YUYV 图像*/
+#endif
+
+/*
+ * 取一帧：成功返回 0，失败 -1。
+ * 帧数据指针和真实字节数通过出参交给调用方——调用方不关心帧从哪来。
+ *  - fd：V4L2 摄像头设备文件句柄 /dev/videoX，真采集才用，假模式没用
+    - void *buffers[]：MMAP 映射出来的缓冲区数组，V4L2 把内核帧缓存映射到用户态，真采集用
+    - struct v4l2_buffer *buf：V4L2 的 buffer 结构体，和驱动交互
+    - uint8_t **frame：出参，输出拿到的图像数据起始地址（二重指针，函数内部修改外部指针的值）
+    - unsigned int *used：出参，输出这一帧图像有效字节数
+ */
+static int acquire_frame(int fd,void *buffers[],struct v4l2_buffer *buf,int frame_no,uint8_t **frame,unsigned int *used){
+ #if FAKE_CAPTURE
+    (void)fd;(void)buffers;(void)buf;                   /*假模式用不到，消 -Wextra 警告*/
+    gen_test_frame(g_fake_yuyv,WIDTH,HEIGHT,frame_no);    /*把图生成到全局缓冲 g_fake_yuyv*/
+    *frame=g_fake_yuyv;                                 /*把图像缓冲区地址传给调用方*/
+    *used=(unsigned int)(WIDTH * HEIGHT *2);
+    return 0;
+
+    /*#else进入真实 V4L2 采集分支*/
+#else
+    (void)frame_no;
+    memset(buf,0,sizeof(*buf));
+    buf->type=V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    buf->memory=V4L2_MEMORY_MMAP;
+    if(ioctl(fd,VIDIOC_DQBUF,buf)<0){
+        perror("VIDIOC_DQBUF");
+        return -1;
+    }
+
+    *frame=(uint8_t *)buffers[buf->index];
+    *used=(unsigned int)buf->bytesused;
+    return 0;
+#endif
+}
+
+/*
+ * 归还帧：真模式 QBUF 把缓冲还给内核；假模式是自己的内存，空操作。
+ - fd：摄像头句柄
+ - buf：刚才 DQBUF 拿到的 buffer 结构体
+ */
+static void release_frame(int fd,struct v4l2_buffer *buf){
+#if FAKE_CAPTURE
+    (void)fd;(void)buf;     /*假模式：无需归还*/
+
+    /*真采集分支*/
+#else
+    if(ioctl(fd,VIDIOC_QBUF,buf)<0){
+        perror("VIDIOC_QBUF");
+        return;
+    }
+#endif
+}
 int main(void){
     int fd=-1;                                  /*设备 fd，-1 表示未打开*/
     void *buffers[REQ_BUF_COUNT]={0};           /*存放每个内核缓冲区 mmap 后的用户态指针*/
     unsigned int buf_len[REQ_BUF_COUNT]={0};    /* 每块 mmap 的长度*/
     unsigned int actural_buf_cnt=0;             /*内核实际给的缓冲区数量*/
+    int stream_on=0;                            /*成功开流置1*/ 
+
     int real_w=0,real_h=0;                      /*驱动S_FMT 读回的真实宽高*/
     uint8_t *rgb_buf=NULL;                      /*RGB 转换的临时缓冲区，预分配复用*/
-    int ret=-1;                                 /*返回码，-1=失败*/
-    int stream_on=0;                            /*成功开流置1*/
+    int ret=-1;                                 /*返回码，-1=失败*/ 
 
+#if !FAKE_CAPTURE
     /* ========== 1. 打开视频设备 ========== */
     printf("[step 1] open %s...\n",DEV_NODE);
     fd=open(DEV_NODE,O_RDWR);
@@ -156,42 +217,42 @@ int main(void){
     }
     stream_on=1;
 
-    /* ========== 8. 采集循环（核心） ========== */
-    printf("[step 8] start capture loop,capture %d frames...\n ",CAPTURE_FRAMES);
+#else                       /*假模式的初始化*/
+    real_w=WIDTH;
+    real_h=HEIGHT;
+    g_fake_yuyv=(uint8_t *)malloc((size_t)real_w *real_h *2);
+    rgb_buf=(uint8_t *)malloc((size_t)real_w *real_h *3);
+    if(!g_fake_yuyv || !rgb_buf){
+        fprintf(stderr,"malloc fake buffers failed\n");
+        goto cleanup;
+    }
+#endif
+
+    /*====== 8.假模式采集循环换成接口调用======*/
+    printf("[step 8] capture loop, %d frames...\n",CAPTURE_FRAMES);
     for(int i=0;i<CAPTURE_FRAMES;i++){
-        struct v4l2_buffer buf;
+        uint8_t *frame=NULL;
+        unsigned int used=0;
+        struct v4l2_buffer buf;      /* 两种模式都需要，作为 acquire/release 的载体 */
         memset(&buf,0,sizeof(buf));
-        buf.type=V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        buf.memory=V4L2_MEMORY_MMAP;
-        /* DQBUF: 阻塞等待一帧数据就绪 */
-        if((ioctl(fd,VIDIOC_DQBUF,&buf))<0){
-            perror("VIDIOC_DQBUF");
+
+        if(acquire_frame(fd,buffers,&buf,i,&frame,&used)<0){
             goto cleanup;
         }
 
-        /* ===== 接口边界：采集输出 → 处理链输入 ===== */
-        printf("frames %d:bytesused=%u\n",i,buf.bytesused);
-        /* ====== 处理链 ====== */
-        if(buf.bytesused<(unsigned)(real_h *real_w *2)){
-            if((ioctl(fd,VIDIOC_QBUF,&buf))<0){     /*归还后重抓*/
-                perror("VIDIOC_QBUF");
-                goto cleanup;
-            }    
+        printf("frame %d: used=%u\n", i, used);
+        if (used < (unsigned)(real_w * real_h * 2)) {
+            release_frame(fd, &buf);          /* 短帧归还，跳过 */
             continue;
         }
-        yuyv_to_rgb(buffers[buf.index],rgb_buf,real_w,real_h);
 
-        char filename[32];
-        snprintf(filename,sizeof(filename),"cap_%02d.jpg",i);
-        if((write_jpeg(filename,rgb_buf,real_w,real_h,JPEG_QUALITY))==0){
-            printf(" saved %s\n",filename);
-        }
+        yuyv_to_rgb(frame, rgb_buf, real_w, real_h);   /* 处理链：一行不改 */
+        char name[32];
+        snprintf(name, sizeof(name), "cap_%02d.jpg", i);
+        if (write_jpeg(name, rgb_buf, real_w, real_h, JPEG_QUALITY) == 0)
+            printf("  saved %s\n", name);
 
-        /* 必须归还缓冲到内核，否则几帧后缓冲耗尽卡死 */
-        if((ioctl(fd,VIDIOC_QBUF,&buf))<0){
-            perror("VIDIOC_QBUF");
-            goto cleanup;
-        }
+        release_frame(fd, &buf);
     }
 
     ret=0;
@@ -215,5 +276,10 @@ int main(void){
     if (fd >= 0) {
         close(fd);
     }
+
+#if FAKE_CAPTURE
+    free(g_fake_yuyv);
+#endif
+
     return ret ? 1 :0;
 }
